@@ -1,6 +1,14 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { AlertTriangle, BarChart3, ClipboardList, Utensils } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  ClipboardList,
+  Settings,
+  ShieldCheck,
+  Utensils,
+  UsersRound,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { getAnalyticsDashboardData } from "@/lib/data/analytics";
@@ -94,6 +102,50 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-2">
+          <Card className="rounded-lg border border-white/10 bg-white/[0.035] py-0">
+            <CardContent className="p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-lg bg-blue-400/10 text-blue-200">
+                  <UsersRound className="size-5" />
+                </div>
+                <div>
+                  <h2 className="font-semibold">Role management</h2>
+                  <p className="text-sm text-zinc-400">
+                    Admin, chef, waiter, and customer permissions are enforced by route guards.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+                {["Admin", "Chef", "Waiter", "Customer"].map((role) => (
+                  <div key={role} className="rounded-lg bg-black/20 p-3">
+                    <ShieldCheck className="mb-2 size-4 text-emerald-200" />
+                    {role}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="rounded-lg border border-white/10 bg-white/[0.035] py-0">
+            <CardContent className="p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-lg bg-orange-400/10 text-orange-200">
+                  <Settings className="size-5" />
+                </div>
+                <div>
+                  <h2 className="font-semibold">Restaurant settings</h2>
+                  <p className="text-sm text-zinc-400">
+                    Service charge, taxes, QR table defaults, and kitchen notification settings.
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" className="mt-5 border-white/10 bg-white/5 text-white hover:bg-white/10">
+                Configure settings
+              </Button>
             </CardContent>
           </Card>
         </section>

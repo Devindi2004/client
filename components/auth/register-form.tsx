@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LockKeyhole, Mail, Phone, UserRound, UsersRound } from "lucide-react";
 import { toast } from "sonner";
@@ -16,7 +16,16 @@ export function RegisterForm() {
   const router = useRouter();
   const { loading, register } = useAuth();
   const [error, setError] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("customer");
+  const passwordScore = useMemo(() => {
+    return [
+      password.length >= 8,
+      /[A-Z]/.test(password),
+      /\d/.test(password),
+      /[^A-Za-z0-9]/.test(password),
+    ].filter(Boolean).length;
+  }, [password]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -121,10 +130,43 @@ export function RegisterForm() {
                   type="password"
                   autoComplete="new-password"
                   required
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
                   placeholder="At least 8 characters and 1 number"
                   className="min-h-11 border-white/10 bg-white/[0.04] text-white"
                 />
+                <div className="mt-2 grid grid-cols-4 gap-1">
+                  {[0, 1, 2, 3].map((index) => (
+                    <div
+                      key={index}
+                      className={
+                        index < passwordScore
+                          ? "h-1.5 rounded-full bg-emerald-400"
+                          : "h-1.5 rounded-full bg-white/10"
+                      }
+                    />
+                  ))}
+                </div>
               </Field>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
+                  onClick={() => toast.info("Google sign-in will connect later.")}
+                >
+                  Continue with Google
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
+                  onClick={() => toast.info("Apple sign-in will connect later.")}
+                >
+                  Continue with Apple
+                </Button>
+              </div>
 
               {error && (
                 <p className="rounded-lg border border-rose-300/20 bg-rose-400/10 p-3 text-sm text-rose-100">

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { BadgeCheck, Gift, UserRound } from "lucide-react";
+import { BadgeCheck, Gift, Heart, History, UserRound } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
 export const metadata: Metadata = {
@@ -23,6 +23,16 @@ export default function ProfilePage() {
       title: "Dining profile",
       text: "Spicy, seafood, desserts",
       icon: UserRound,
+    },
+    {
+      title: "Favorite dishes",
+      text: "Double tap menu cards to save favorites",
+      icon: Heart,
+    },
+    {
+      title: "Recently ordered",
+      text: "Lagoon Crab Kottu, King Coconut Spritz",
+      icon: History,
     },
   ];
 

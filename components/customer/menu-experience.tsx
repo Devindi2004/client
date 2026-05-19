@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence } from "framer-motion";
 import {
-  Filter,
   Leaf,
   Search,
   ShoppingCart,
@@ -18,9 +17,16 @@ import { CartSheet } from "@/components/customer/cart-sheet";
 import { MenuItemCard } from "@/components/customer/menu-item-card";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { useCart } from "@/hooks/use-cart";
-import { formatCurrency, menuCategories, menuItems } from "@/lib/data/menu";
+import { useFavorites } from "@/hooks/use-favorites";
+import {
+  formatCurrency,
+  menuCategories,
+  menuItems,
+  recommendedMenuItems,
+} from "@/lib/data/menu";
 import { cn } from "@/lib/utils";
 import type { DietaryTag, MenuCategory, MenuItem } from "@/types/menu";
 
@@ -46,6 +52,7 @@ export function MenuExperience({
   const [searchQuery, setSearchQuery] = useState("");
   const [cartOpen, setCartOpen] = useState(false);
   const cart = useCart();
+  const favorites = useFavorites();
   const setCheckoutDraft = cart.setCheckoutDraft;
   const tableNumber = String(initialTableNumber || "07").padStart(2, "0");
   const tableLabel = `Table ${tableNumber}`;
@@ -72,11 +79,49 @@ export function MenuExperience({
     });
   }, [activeCategory, activeFilter, searchQuery]);
 
+  const smartRecommendations = useMemo(() => {
+    const cartCategories = new Set(cart.items.map((item) => item.category));
+    const favoriteItems = menuItems.filter((item) =>
+      favorites.favoriteIds.includes(item.id)
+    );
+    const recentItems = menuItems.filter((item) =>
+      favorites.recentlyOrderedIds.includes(item.id)
+    );
+    const categoryMatches = menuItems.filter((item) =>
+      cartCategories.has(item.category)
+    );
+
+    return [
+      ...favoriteItems,
+      ...recentItems,
+      ...categoryMatches,
+      ...recommendedMenuItems,
+    ]
+      .filter(
+        (item, index, list) =>
+          list.findIndex((candidate) => candidate.id === item.id) === index
+      )
+      .slice(0, 4);
+  }, [cart.items, favorites.favoriteIds, favorites.recentlyOrderedIds]);
+
   const addItem = (item: MenuItem) => {
     cart.addItem(item);
+    favorites.addRecent(item.id);
     toast.success(`${item.name} added`, {
       description: `${formatCurrency(item.price)} added to ${tableLabel}`,
     });
+  };
+
+  const toggleFavorite = (item: MenuItem) => {
+    favorites.toggleFavorite(item.id);
+    toast.success(
+      favorites.isFavorite(item.id)
+        ? "Removed from favorites"
+        : "Added to favorites",
+      {
+        description: item.name,
+      }
+    );
   };
 
   const handleCheckout = () => {
@@ -183,7 +228,10 @@ export function MenuExperience({
         </div>
       </section>
 
-      <AiRecommendations onAddItem={addItem} />
+      <AiRecommendations
+        onAddItem={addItem}
+        recommendedItems={smartRecommendations}
+      />
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -205,61 +253,69 @@ export function MenuExperience({
           </div>
         </div>
 
-        <div className="mt-6 flex gap-2 overflow-x-auto pb-2">
-          {menuCategories.map((category) => (
-            <Button
-              key={category}
-              variant={activeCategory === category ? "default" : "outline"}
-              className={cn(
-                "shrink-0 rounded-full",
-                activeCategory === category
-                  ? "bg-emerald-400 text-zinc-950 hover:bg-emerald-300"
-                  : "border-white/10 bg-white/[0.03] text-zinc-200 hover:bg-white/10"
-              )}
-              onClick={() => setActiveCategory(category)}
-            >
-              {category}
-            </Button>
-          ))}
-        </div>
-
-        <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
-          {filters.map((filter) => {
-            const Icon = filter.icon;
-            const active = activeFilter === filter.value;
-
-            return (
+        <div className="sticky top-[73px] z-30 -mx-4 mt-6 border-y border-white/10 bg-zinc-950/92 px-4 py-3 backdrop-blur-xl sm:-mx-6 sm:px-6">
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            {menuCategories.map((category) => (
               <Button
-                key={filter.value}
-                variant="outline"
+                key={category}
+                variant={activeCategory === category ? "default" : "outline"}
                 className={cn(
-                  "shrink-0 rounded-full border-white/10 bg-transparent text-zinc-300 hover:bg-white/10",
-                  active && "border-orange-300/40 bg-orange-400/15 text-orange-100"
+                  "shrink-0 rounded-full",
+                  activeCategory === category
+                    ? "bg-emerald-400 text-zinc-950 hover:bg-emerald-300"
+                    : "border-white/10 bg-white/[0.03] text-zinc-200 hover:bg-white/10"
                 )}
-                onClick={() => setActiveFilter(filter.value)}
+                onClick={() => setActiveCategory(category)}
               >
-                <Icon className="size-4" />
-                {filter.label}
+                {category}
               </Button>
-            );
-          })}
+            ))}
+          </div>
+
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {filters.map((filter) => {
+              const Icon = filter.icon;
+              const active = activeFilter === filter.value;
+
+              return (
+                <Button
+                  key={filter.value}
+                  variant="outline"
+                  className={cn(
+                    "shrink-0 rounded-full border-white/10 bg-transparent text-zinc-300 hover:bg-white/10",
+                    active &&
+                      "border-orange-300/40 bg-orange-400/15 text-orange-100"
+                  )}
+                  onClick={() => setActiveFilter(filter.value)}
+                >
+                  <Icon className="size-4" />
+                  {filter.label}
+                </Button>
+              );
+            })}
+          </div>
         </div>
 
         <AnimatePresence mode="popLayout">
           <div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {filteredItems.map((item) => (
-              <MenuItemCard key={item.id} item={item} onAddItem={addItem} />
+              <MenuItemCard
+                key={item.id}
+                favorite={favorites.isFavorite(item.id)}
+                item={item}
+                onAddItem={addItem}
+                onToggleFavorite={toggleFavorite}
+              />
             ))}
           </div>
         </AnimatePresence>
 
         {filteredItems.length === 0 && (
-          <div className="mt-10 rounded-lg border border-white/10 bg-white/[0.03] p-8 text-center">
-            <Filter className="mx-auto size-8 text-zinc-500" />
-            <p className="mt-3 text-lg font-semibold">No matching dishes</p>
-            <p className="mt-2 text-sm text-zinc-400">
-              Try a different search term or clear one of the active filters.
-            </p>
+          <div className="mt-10">
+            <EmptyState
+              description="Try a different search term or clear one of the active filters."
+              title="No matching dishes"
+            />
           </div>
         )}
       </main>

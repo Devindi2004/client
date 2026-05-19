@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { io, type Socket } from "socket.io-client";
 import { ChefHat, Clock3, Flame, PackageCheck } from "lucide-react";
 import { toast } from "sonner";
+import { useSocket } from "@/components/providers/socket-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,27 +27,35 @@ const nextStatus: Record<OrderStatus, OrderStatus | null> = {
 
 export function KitchenDashboard() {
   const [orders, setOrders] = useState<CustomerOrder[]>(mockOrders);
+  const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null);
+  const { connected, socket } = useSocket();
 
   useEffect(() => {
-    let socket: Socket | null = null;
-
-    if (process.env.NEXT_PUBLIC_SOCKET_URL) {
-      socket = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
-        transports: ["websocket"],
-      });
-      socket.on("order:update", (updatedOrder: CustomerOrder) => {
-        setOrders((current) =>
-          current.map((order) =>
-            order.id === updatedOrder.id ? updatedOrder : order
-          )
-        );
-      });
+    if (!socket) {
+      return;
     }
 
+    socket.emit("kitchen:join", { restaurantId: "rest123" });
+    socket.on("order:new", (order) => {
+      setOrders((current) => [order, ...current]);
+      playNotification();
+      toast.success("New kitchen order", {
+        description: `${order.orderNumber} for Table ${order.tableNumber}`,
+      });
+    });
+    socket.on("order:update", (updatedOrder) => {
+      setOrders((current) =>
+        current.map((order) =>
+          order.id === updatedOrder.id ? updatedOrder : order
+        )
+      );
+    });
+
     return () => {
-      socket?.disconnect();
+      socket.off("order:new");
+      socket.off("order:update");
     };
-  }, []);
+  }, [socket]);
 
   const groupedOrders = useMemo(
     () =>
@@ -67,14 +75,22 @@ export function KitchenDashboard() {
     toast.success("Order status updated", {
       description: `Order moved to ${status}.`,
     });
+    socket?.emit("order:status", { orderId, status });
   };
+
+  const kitchenMetrics = [
+    ["Active", orders.filter((order) => order.status !== "completed").length],
+    ["Ready", orders.filter((order) => order.status === "ready").length],
+    ["Avg prep", "16m"],
+    ["Realtime", connected ? "Live" : "Mock"],
+  ];
 
   return (
     <main className="min-h-screen bg-zinc-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
         <section className="rounded-lg border border-white/10 bg-[linear-gradient(135deg,rgba(6,78,59,0.34),rgba(24,24,27,0.88),rgba(124,45,18,0.18))] p-5">
           <Badge className="border-emerald-300/20 bg-emerald-300/10 text-emerald-100">
-            Socket.IO ready
+            {connected ? "Realtime connected" : "Mock realtime"}
           </Badge>
           <h1 className="mt-4 text-3xl font-semibold">Kitchen dashboard</h1>
           <p className="mt-2 text-sm text-zinc-400">
@@ -82,12 +98,38 @@ export function KitchenDashboard() {
           </p>
         </section>
 
+        <section className="mt-5 grid gap-3 sm:grid-cols-4">
+          {kitchenMetrics.map(([label, value]) => (
+            <div
+              key={String(label)}
+              className="rounded-lg border border-white/10 bg-white/[0.035] p-4"
+            >
+              <p className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+                {label}
+              </p>
+              <p className="mt-2 text-2xl font-semibold text-emerald-200">
+                {value}
+              </p>
+            </div>
+          ))}
+        </section>
+
         <section className="mt-5 grid gap-4 xl:grid-cols-4">
           {groupedOrders.map((column) => {
             const Icon = column.icon;
 
             return (
-              <div key={column.status} className="space-y-3">
+              <div
+                key={column.status}
+                className="space-y-3"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => {
+                  if (draggedOrderId) {
+                    moveOrder(draggedOrderId, column.status);
+                    setDraggedOrderId(null);
+                  }
+                }}
+              >
                 <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.035] p-3">
                   <div className="flex items-center gap-2">
                     <Icon className="size-4 text-emerald-200" />
@@ -101,7 +143,10 @@ export function KitchenDashboard() {
                 {column.orders.map((order) => (
                   <Card
                     key={order.id}
-                    className="rounded-lg border border-white/10 bg-zinc-900/78 py-0"
+                    className="cursor-grab rounded-lg border border-white/10 bg-zinc-900/78 py-0 active:cursor-grabbing"
+                    draggable
+                    onDragStart={() => setDraggedOrderId(order.id)}
+                    onDragEnd={() => setDraggedOrderId(null)}
                   >
                     <CardHeader className="border-b border-white/10 px-4 py-3">
                       <CardTitle className="flex items-center justify-between text-base">
@@ -111,13 +156,19 @@ export function KitchenDashboard() {
                         </span>
                       </CardTitle>
                       <p className="text-xs text-zinc-400">
-                        {new Date(order.createdAt).toLocaleTimeString("en-LK", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+                        {getElapsedMinutes(order.createdAt)} min elapsed ·{" "}
+                        {order.paymentMethod === "cash" ? "Pay at table" : "Paid"}
                       </p>
                     </CardHeader>
                     <CardContent className="p-4">
+                      <div className="mb-3 flex gap-2">
+                        <Badge className={getPriorityClass(order.createdAt)}>
+                          {getPriorityLabel(order.createdAt)}
+                        </Badge>
+                        <Badge className="bg-white/5 text-zinc-300">
+                          {order.paymentMethod}
+                        </Badge>
+                      </div>
                       <div className="space-y-2">
                         {order.items.map((item) => (
                           <div key={item.id} className="text-sm text-zinc-300">
@@ -156,4 +207,33 @@ export function KitchenDashboard() {
       </div>
     </main>
   );
+}
+
+function getElapsedMinutes(createdAt: string) {
+  return Math.max(1, Math.round((Date.now() - new Date(createdAt).getTime()) / 60000));
+}
+
+function getPriorityLabel(createdAt: string) {
+  const minutes = getElapsedMinutes(createdAt);
+  if (minutes >= 18) return "Rush";
+  if (minutes >= 10) return "Priority";
+  return "Normal";
+}
+
+function getPriorityClass(createdAt: string) {
+  const priority = getPriorityLabel(createdAt);
+  if (priority === "Rush") return "bg-rose-400/15 text-rose-200";
+  if (priority === "Priority") return "bg-orange-400/15 text-orange-200";
+  return "bg-emerald-400/15 text-emerald-200";
+}
+
+function playNotification() {
+  const audio = new Audio();
+  audio.src =
+    "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+  audio.play().catch(() => undefined);
+
+  if ("vibrate" in navigator) {
+    navigator.vibrate(80);
+  }
 }

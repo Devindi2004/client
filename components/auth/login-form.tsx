@@ -105,6 +105,25 @@ export function LoginForm() {
           </p>
         )}
 
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
+            onClick={() => toast.info("Google sign-in placeholder")}
+          >
+            Google
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
+            onClick={() => toast.info("Apple sign-in placeholder")}
+          >
+            Apple
+          </Button>
+        </div>
+
         <Button
           className="min-h-11 w-full bg-emerald-400 text-zinc-950 hover:bg-emerald-300"
           disabled={loading}

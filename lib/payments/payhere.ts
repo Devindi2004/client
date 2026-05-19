@@ -9,6 +9,14 @@ export type PaymentResult = {
 export async function startMockPayHereCheckout(
   payload: CheckoutPayload
 ): Promise<PaymentResult> {
+  if (payload.totalAmount <= 0) {
+    return {
+      ok: false,
+      provider: "mock",
+      transactionId: "PAY-INVALID",
+    };
+  }
+
   await new Promise((resolve) => window.setTimeout(resolve, 900));
 
   return {

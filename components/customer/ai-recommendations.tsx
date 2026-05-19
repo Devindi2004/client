@@ -9,9 +9,13 @@ import type { MenuItem } from "@/types/menu";
 
 type AiRecommendationsProps = {
   onAddItem: (item: MenuItem) => void;
+  recommendedItems?: MenuItem[];
 };
 
-export function AiRecommendations({ onAddItem }: AiRecommendationsProps) {
+export function AiRecommendations({
+  onAddItem,
+  recommendedItems = recommendedMenuItems,
+}: AiRecommendationsProps) {
   return (
     <section className="rounded-none border-y border-white/10 bg-[linear-gradient(110deg,rgba(5,46,35,0.88),rgba(9,9,11,0.98)_48%,rgba(67,32,14,0.78))] py-8">
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
@@ -35,15 +39,15 @@ export function AiRecommendations({ onAddItem }: AiRecommendationsProps) {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {recommendedMenuItems.map((item, index) => (
+        <div className="mt-6 flex snap-x gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-2 md:overflow-visible xl:grid-cols-4">
+          {recommendedItems.map((item, index) => (
             <motion.article
               key={item.id}
               initial={{ opacity: 0, y: 16 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, amount: 0.3 }}
               transition={{ duration: 0.35, delay: index * 0.05 }}
-              className="overflow-hidden rounded-lg border border-white/10 bg-zinc-950/72 shadow-2xl shadow-black/20 backdrop-blur"
+              className="min-w-[78vw] snap-start overflow-hidden rounded-lg border border-white/10 bg-zinc-950/72 shadow-2xl shadow-black/20 backdrop-blur sm:min-w-[340px] md:min-w-0"
             >
               <div className="relative aspect-[5/3]">
                 <Image
@@ -57,34 +61,38 @@ export function AiRecommendations({ onAddItem }: AiRecommendationsProps) {
                 <span className="absolute right-3 top-3 rounded-full bg-orange-400/90 px-2.5 py-1 text-xs font-semibold text-zinc-950">
                   {item.rating}
                 </span>
+                <span className="absolute left-3 top-3 rounded-full border border-emerald-300/20 bg-emerald-300/15 px-2.5 py-1 text-xs font-semibold text-emerald-100">
+                  AI pick
+                </span>
               </div>
               <div className="p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-semibold text-white">
-                    {item.name}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    {item.recommendationReason}
-                  </p>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-white">
+                      {item.name}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-400">
+                      {item.recommendationReason ??
+                        "A smart upsell based on table preferences."}
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-300">
+                    <Clock3 className="size-3" />
+                    {item.prepTime}m
+                  </span>
                 </div>
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-300">
-                  <Clock3 className="size-3" />
-                  {item.prepTime}m
-                </span>
-              </div>
-              <div className="mt-4 flex items-center justify-between">
-                <span className="text-sm font-semibold text-emerald-200">
-                  {formatCurrency(item.price)}
-                </span>
-                <Button
-                  size="sm"
-                  className="bg-emerald-400 text-zinc-950 hover:bg-emerald-300"
-                  onClick={() => onAddItem(item)}
-                >
-                  Add
-                </Button>
-              </div>
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-emerald-200">
+                    {formatCurrency(item.price)}
+                  </span>
+                  <Button
+                    size="sm"
+                    className="bg-emerald-400 text-zinc-950 hover:bg-emerald-300"
+                    onClick={() => onAddItem(item)}
+                  >
+                    Add
+                  </Button>
+                </div>
               </div>
             </motion.article>
           ))}

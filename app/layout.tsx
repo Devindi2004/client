@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { Viewport } from "next";
 import { Inter } from "next/font/google";
 import { CustomerMobileNav } from "@/components/layout/customer-mobile-nav";
+import { AppProviders } from "@/components/providers/app-providers";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
@@ -68,19 +69,21 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${inter.className} min-h-screen overflow-x-hidden bg-zinc-950 pb-20 text-white antialiased md:pb-0`}
       >
-        <div className="min-h-screen overflow-x-hidden">{children}</div>
-        <CustomerMobileNav />
-        <Toaster
-          position="top-center"
-          richColors
-          closeButton
-          toastOptions={{
-            classNames: {
-              toast:
-                "border-white/10 bg-zinc-950 text-white shadow-2xl shadow-black/30",
-            },
-          }}
-        />
+        <AppProviders>
+          <div className="min-h-screen overflow-x-hidden">{children}</div>
+          <CustomerMobileNav />
+          <Toaster
+            position="top-center"
+            richColors
+            closeButton
+            toastOptions={{
+              classNames: {
+                toast:
+                  "border-white/10 bg-zinc-950 text-white shadow-2xl shadow-black/30",
+              },
+            }}
+          />
+        </AppProviders>
       </body>
     </html>
   );
