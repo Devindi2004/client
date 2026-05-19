@@ -261,7 +261,7 @@ function CartContent({
           onClick={onCheckout}
         >
           <CreditCard className="size-4" />
-          Secure mock checkout
+          Proceed to checkout
         </Button>
       </footer>
     </>

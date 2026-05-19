@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence } from "framer-motion";
 import {
   Filter,
@@ -30,12 +31,28 @@ const filters: { label: string; value: DietaryTag | "all"; icon: typeof Leaf }[]
   { label: "High protein", value: "high-protein", icon: Utensils },
 ];
 
-export function MenuExperience() {
+type MenuExperienceProps = {
+  initialRestaurantId?: string;
+  initialTableNumber?: string;
+};
+
+export function MenuExperience({
+  initialRestaurantId = "rest123",
+  initialTableNumber = "07",
+}: MenuExperienceProps) {
+  const router = useRouter();
   const [activeCategory, setActiveCategory] = useState<MenuCategory>("All");
   const [activeFilter, setActiveFilter] = useState<DietaryTag | "all">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [cartOpen, setCartOpen] = useState(false);
   const cart = useCart();
+  const setCheckoutDraft = cart.setCheckoutDraft;
+  const tableNumber = String(initialTableNumber || "07").padStart(2, "0");
+  const tableLabel = `Table ${tableNumber}`;
+
+  useEffect(() => {
+    setCheckoutDraft({ tableNo: tableNumber });
+  }, [setCheckoutDraft, tableNumber]);
 
   const filteredItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -58,20 +75,13 @@ export function MenuExperience() {
   const addItem = (item: MenuItem) => {
     cart.addItem(item);
     toast.success(`${item.name} added`, {
-      description: `${formatCurrency(item.price)} added to Table 07`,
+      description: `${formatCurrency(item.price)} added to ${tableLabel}`,
     });
   };
 
   const handleCheckout = () => {
-    const orderId = `DF-${new Date().getFullYear().toString().slice(2)}${String(
-      Math.floor(Math.random() * 9000) + 1000
-    )}`;
-
-    toast.success("Payment authorized", {
-      description: `Order ${orderId} is now being sent to the kitchen.`,
-    });
-    cart.clearCart();
     setCartOpen(false);
+    router.push(`/checkout?table=${tableNumber}&restaurant=${initialRestaurantId}`);
   };
 
   return (
@@ -81,7 +91,7 @@ export function MenuExperience() {
           <BrandMark />
           <div className="hidden items-center gap-3 md:flex">
             <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.2em] text-emerald-100">
-              QR Table 07
+              QR {tableLabel}
             </span>
             <Button
               variant="outline"
@@ -254,7 +264,7 @@ export function MenuExperience() {
         )}
       </main>
 
-      <div className="fixed bottom-4 left-4 right-4 z-40 md:hidden">
+      <div className="fixed bottom-20 left-4 right-4 z-40 md:hidden">
         <Button
           className="h-12 w-full justify-between bg-orange-400 px-4 text-zinc-950 shadow-2xl shadow-orange-950/30 hover:bg-orange-300"
           onClick={() => setCartOpen(true)}
