@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
+import { getRoleRedirect } from "@/lib/auth/roles";
 
 export function LoginForm() {
   const router = useRouter();
@@ -34,7 +35,11 @@ export function LoginForm() {
       toast.success("Welcome back", {
         description: `Signed in as ${payload.user?.name ?? "DineFlow user"}.`,
       });
-      router.replace(requestedNext || payload.redirectTo || "/menu");
+      router.replace(
+        requestedNext ||
+          payload.redirectTo ||
+          (payload.user ? getRoleRedirect(payload.user.role) : "/menu")
+      );
     } catch (authError) {
       const message =
         authError instanceof Error ? authError.message : "Unable to login.";
@@ -104,25 +109,6 @@ export function LoginForm() {
             {error}
           </p>
         )}
-
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
-            onClick={() => toast.info("Google sign-in placeholder")}
-          >
-            Google
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
-            onClick={() => toast.info("Apple sign-in placeholder")}
-          >
-            Apple
-          </Button>
-        </div>
 
         <Button
           className="min-h-11 w-full bg-emerald-400 text-zinc-950 hover:bg-emerald-300"

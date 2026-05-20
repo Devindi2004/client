@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 import {
+  Loader2,
   Leaf,
   Search,
   ShoppingCart,
@@ -24,9 +26,9 @@ import { useFavorites } from "@/hooks/use-favorites";
 import {
   formatCurrency,
   menuCategories,
-  menuItems,
   recommendedMenuItems,
 } from "@/lib/data/menu";
+import { getMenuItems } from "@/lib/services/menu-service";
 import { cn } from "@/lib/utils";
 import type { DietaryTag, MenuCategory, MenuItem } from "@/types/menu";
 
@@ -56,6 +58,15 @@ export function MenuExperience({
   const setCheckoutDraft = cart.setCheckoutDraft;
   const tableNumber = String(initialTableNumber || "07").padStart(2, "0");
   const tableLabel = `Table ${tableNumber}`;
+  const {
+    data: serviceMenuItems = [],
+    isError,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ["menu", initialRestaurantId],
+    queryFn: getMenuItems,
+  });
 
   useEffect(() => {
     setCheckoutDraft({ tableNo: tableNumber });
@@ -64,7 +75,7 @@ export function MenuExperience({
   const filteredItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
-    return menuItems.filter((item) => {
+    return serviceMenuItems.filter((item) => {
       const matchesCategory =
         activeCategory === "All" || item.category === activeCategory;
       const matchesFilter =
@@ -77,17 +88,17 @@ export function MenuExperience({
 
       return matchesCategory && matchesFilter && matchesSearch;
     });
-  }, [activeCategory, activeFilter, searchQuery]);
+  }, [activeCategory, activeFilter, searchQuery, serviceMenuItems]);
 
   const smartRecommendations = useMemo(() => {
     const cartCategories = new Set(cart.items.map((item) => item.category));
-    const favoriteItems = menuItems.filter((item) =>
+    const favoriteItems = serviceMenuItems.filter((item) =>
       favorites.favoriteIds.includes(item.id)
     );
-    const recentItems = menuItems.filter((item) =>
+    const recentItems = serviceMenuItems.filter((item) =>
       favorites.recentlyOrderedIds.includes(item.id)
     );
-    const categoryMatches = menuItems.filter((item) =>
+    const categoryMatches = serviceMenuItems.filter((item) =>
       cartCategories.has(item.category)
     );
 
@@ -102,7 +113,12 @@ export function MenuExperience({
           list.findIndex((candidate) => candidate.id === item.id) === index
       )
       .slice(0, 4);
-  }, [cart.items, favorites.favoriteIds, favorites.recentlyOrderedIds]);
+  }, [
+    cart.items,
+    favorites.favoriteIds,
+    favorites.recentlyOrderedIds,
+    serviceMenuItems,
+  ]);
 
   const addItem = (item: MenuItem) => {
     cart.addItem(item);
@@ -238,8 +254,9 @@ export function MenuExperience({
           <div>
             <h2 className="text-2xl font-semibold">Digital QR menu</h2>
             <p className="mt-2 text-sm text-zinc-400">
-              {filteredItems.length} dishes available from today&apos;s service
-              menu.
+              {isLoading
+                ? "Loading today's service menu..."
+                : `${filteredItems.length} dishes available from today's service menu.`}
             </p>
           </div>
           <div className="relative w-full lg:max-w-sm">
@@ -252,6 +269,21 @@ export function MenuExperience({
             />
           </div>
         </div>
+
+        {isError && (
+          <div className="mt-5 rounded-lg border border-orange-300/20 bg-orange-400/10 p-4 text-sm text-orange-100">
+            Backend menu data is unavailable, so DineFlow is showing the local
+            service menu fallback.
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-0 mt-3 border-white/10 bg-white/5 text-white hover:bg-white/10 sm:ml-3 sm:mt-0"
+              onClick={() => refetch()}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
 
         <div className="sticky top-[73px] z-30 -mx-4 mt-6 border-y border-white/10 bg-zinc-950/92 px-4 py-3 backdrop-blur-xl sm:-mx-6 sm:px-6">
           <div className="flex gap-2 overflow-x-auto pb-2">
@@ -298,6 +330,24 @@ export function MenuExperience({
 
         <AnimatePresence mode="popLayout">
           <div className="mt-8 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+            {isLoading &&
+              Array.from({ length: 6 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="min-h-[390px] animate-pulse rounded-lg border border-white/10 bg-white/[0.035]"
+                >
+                  <div className="h-52 rounded-t-lg bg-white/10" />
+                  <div className="space-y-3 p-5">
+                    <div className="h-4 w-2/3 rounded bg-white/10" />
+                    <div className="h-3 w-full rounded bg-white/10" />
+                    <div className="h-3 w-4/5 rounded bg-white/10" />
+                    <div className="flex justify-between pt-4">
+                      <div className="h-9 w-24 rounded bg-white/10" />
+                      <div className="h-9 w-20 rounded bg-white/10" />
+                    </div>
+                  </div>
+                </div>
+              ))}
             {filteredItems.map((item) => (
               <MenuItemCard
                 key={item.id}
@@ -310,7 +360,14 @@ export function MenuExperience({
           </div>
         </AnimatePresence>
 
-        {filteredItems.length === 0 && (
+        {isLoading && (
+          <div className="mt-5 flex items-center justify-center gap-2 text-sm text-zinc-400">
+            <Loader2 className="size-4 animate-spin text-emerald-300" />
+            Connecting to restaurant menu API
+          </div>
+        )}
+
+        {!isLoading && filteredItems.length === 0 && (
           <div className="mt-10">
             <EmptyState
               description="Try a different search term or clear one of the active filters."

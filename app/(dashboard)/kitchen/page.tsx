@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ProtectedRoute } from "@/components/auth/protected-route";
 import { KitchenDashboard } from "@/components/dashboard/kitchen-dashboard";
 
 export const metadata: Metadata = {
@@ -7,5 +8,12 @@ export const metadata: Metadata = {
 };
 
 export default function KitchenPage() {
-  return <KitchenDashboard />;
+  return (
+    <ProtectedRoute
+      allowedRoles={["admin", "chef", "waiter", "kitchen"]}
+      pathname="/kitchen"
+    >
+      <KitchenDashboard />
+    </ProtectedRoute>
+  );
 }

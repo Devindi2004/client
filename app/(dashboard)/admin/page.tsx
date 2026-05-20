@@ -9,19 +9,23 @@ import {
   Utensils,
   UsersRound,
 } from "lucide-react";
+import { ProtectedRoute } from "@/components/auth/protected-route";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { getAnalyticsDashboardData } from "@/lib/data/analytics";
-import { mockInventoryAlerts } from "@/lib/data/inventory";
 import { formatCurrency } from "@/lib/data/menu";
+import { getAnalytics } from "@/lib/services/analytics-service";
+import { getInventoryAlerts } from "@/lib/services/inventory-service";
 
 export const metadata: Metadata = {
   title: "Admin Dashboard",
   description: "DineFlow admin dashboard.",
 };
 
-export default function AdminPage() {
-  const analytics = getAnalyticsDashboardData("7d");
+export default async function AdminPage() {
+  const [analytics, inventoryAlerts] = await Promise.all([
+    getAnalytics("7d"),
+    getInventoryAlerts(),
+  ]);
   const metricCards = [
     {
       label: "Revenue",
@@ -40,13 +44,14 @@ export default function AdminPage() {
     },
     {
       label: "Low stock",
-      value: String(mockInventoryAlerts.length),
+      value: String(inventoryAlerts.length),
       icon: AlertTriangle,
     },
   ];
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+    <ProtectedRoute allowedRoles={["admin"]} pathname="/admin">
+      <main className="min-h-screen bg-zinc-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-5">
         <section className="rounded-lg border border-white/10 bg-[linear-gradient(135deg,rgba(6,78,59,0.34),rgba(24,24,27,0.88),rgba(124,45,18,0.18))] p-5">
           <p className="text-xs font-medium uppercase tracking-[0.24em] text-orange-200">
@@ -93,7 +98,7 @@ export default function AdminPage() {
             <CardContent className="p-5">
               <h2 className="font-semibold">Inventory alerts</h2>
               <div className="mt-4 space-y-3">
-                {mockInventoryAlerts.map((alert) => (
+                {inventoryAlerts.map((alert) => (
                   <div key={alert.id} className="rounded-lg border border-orange-300/15 bg-orange-400/10 p-3 text-sm">
                     <p className="font-medium text-orange-100">{alert.item}</p>
                     <p className="text-zinc-400">
@@ -150,6 +155,7 @@ export default function AdminPage() {
           </Card>
         </section>
       </div>
-    </main>
+      </main>
+    </ProtectedRoute>
   );
 }

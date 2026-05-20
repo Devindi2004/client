@@ -12,7 +12,18 @@ import { Input } from "@/components/ui/input";
 import { useCart, type PaymentMethod } from "@/hooks/use-cart";
 import { formatCurrency } from "@/lib/data/menu";
 import { createOrder } from "@/lib/services/order-service";
-import { startMockPayHereCheckout } from "@/lib/payments/payhere";
+import { api, getApiErrorMessage, unwrapApiData } from "@/lib/api";
+
+declare global {
+  interface Window {
+    payhere?: {
+      startPayment: (payment: Record<string, unknown>) => void;
+      onCompleted?: (orderId: string) => void;
+      onDismissed?: () => void;
+      onError?: (error: string) => void;
+    };
+  }
+}
 
 const checkoutSchema = z.object({
   customerName: z.string().trim().min(2, "Name is required."),
@@ -89,18 +100,49 @@ export function CheckoutExperience({
         totalAmount: cart.summary.total,
       };
 
-      await startMockPayHereCheckout(payload);
       const order = await createOrder(payload);
 
-      cart.clearCart();
-      cart.resetCheckoutDraft();
-      toast.success("Order confirmed", {
-        description: `${order.orderNumber} is now live in kitchen tracking.`,
-      });
-      router.push(`/tracking/${order.orderNumber}`);
-    } catch {
+      if (parsed.data.paymentMethod === "payhere") {
+        if (!window.payhere) {
+          throw new Error("PayHere is still loading. Please try again.");
+        }
+
+        const paymentResponse = await api.post<unknown>("/payments/payhere/init", {
+          orderId: order.id,
+        });
+        const payment = unwrapApiData(paymentResponse.data) as Record<string, unknown>;
+
+        window.payhere.onCompleted = (payhereOrderId) => {
+          cart.clearCart();
+          cart.resetCheckoutDraft();
+          toast.success("Payment completed", {
+            description: `${order.orderNumber} is now live in tracking.`,
+          });
+          router.push(`/tracking/${payhereOrderId || order.id}`);
+        };
+        window.payhere.onDismissed = () => {
+          toast.info("Payment cancelled", {
+            description: "Your order is saved with pending payment.",
+          });
+          router.push(`/tracking/${order.id}`);
+        };
+        window.payhere.onError = (error) => {
+          toast.error("Payment failed", {
+            description: error || "Please try again or choose cash.",
+          });
+        };
+        window.payhere.startPayment(payment);
+      } else {
+        cart.clearCart();
+        cart.resetCheckoutDraft();
+        toast.success("Order confirmed", {
+          description: `${order.orderNumber} is now live in kitchen tracking.`,
+        });
+        router.push(`/tracking/${order.id}`);
+      }
+    } catch (error) {
       toast.error("Checkout failed", {
-        description: "Please try again or choose another payment method.",
+        description: getApiErrorMessage(error, "Please try again or choose another payment method."),
       });
     } finally {
       setLoading(false);

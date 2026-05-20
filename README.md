@@ -1,6 +1,14 @@
-# DineFlow
+# DineFlow Frontend
 
-DineFlow is an AI-powered smart restaurant ordering and management frontend built with Next.js App Router, React 19, TypeScript, Tailwind CSS v4, shadcn/ui, Zustand, Axios, Recharts, Socket.IO client, Sonner, and PayHere-ready checkout utilities.
+DineFlow is a Next.js + TypeScript restaurant ordering and management frontend for RAD coursework. It connects to the Express API, uses JWT authentication, protected routes, Redux Toolkit slices, responsive TailwindCSS UI, Socket.IO-ready updates, and Recharts analytics.
+
+## Tech Stack
+
+- Next.js, React, TypeScript
+- TailwindCSS, shadcn-style UI components, lucide-react
+- Axios with JWT interceptor and refresh flow
+- Redux Toolkit: `authSlice`, `menuSlice`, `cartSlice`, `orderSlice`, `inventorySlice`
+- Recharts, Socket.IO client
 
 ## Setup
 
@@ -9,69 +17,62 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Frontend: `http://localhost:3000`
 
-For production checks:
-
-```bash
-npm run lint
-npm run build
-```
-
-## Environment
-
-Copy `.env.example` to `.env.local` and fill in real values.
+Copy `.env.example` to `.env.local`:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:3000
-NEXT_PUBLIC_SOCKET_URL=http://localhost:3000
 NEXT_PUBLIC_DINEFLOW_URL=http://localhost:3000
-MONGODB_URI=mongodb+srv://...
-JWT_SECRET=replace-with-a-long-random-secret
-JWT_REFRESH_SECRET=replace-with-another-long-random-secret
-RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxxxxxx
-EMAIL_FROM="DineFlow <noreply@dineflow.com>"
+NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1
+NEXT_PUBLIC_SOCKET_URL=http://localhost:5000
 ```
 
-No payment secrets should be exposed in the frontend. PayHere production signing must happen on the backend.
+Backend secrets such as `MONGO_URI`, `JWT_SECRET`, and `JWT_REFRESH_SECRET` belong only in the backend project.
 
-## Frontend Routes
+## Main Routes
 
-- `/` - premium DineFlow landing page
-- `/menu?table=5&restaurant=rest123` - QR-aware customer menu
-- `/checkout` - cart checkout with customer details and mock payment
-- `/tracking` - customer order tracking list
-- `/tracking/[orderId]` - order status detail
-- `/profile` - customer profile and loyalty preview
-- `/kitchen` - kitchen order board with Socket.IO-ready structure
-- `/admin` - admin overview
-- `/admin/analytics` - full analytics dashboard with Recharts
-- `/login` and `/register` - auth pages
-- `/check-email` and `/verify-email` - email verification flow
+- `/menu` - customer menu using backend menu data
+- `/checkout` - protected customer checkout that creates MongoDB orders
+- `/tracking` and `/tracking/[orderId]` - protected customer order tracking
+- `/profile` - protected customer profile
+- `/kitchen` - kitchen/admin order board
+- `/admin` and `/admin/analytics` - admin dashboard with real analytics
+- `/login` and `/register` - JWT authentication
 
-## Backend Endpoints Expected
+## Backend Connection
 
-The frontend gracefully falls back to mock data when backend routes are unavailable.
+The Axios client uses `NEXT_PUBLIC_API_URL` and sends:
 
-- `GET /api/menu`
-- `GET /api/orders`
-- `POST /api/orders`
-- `PATCH /api/orders/:id`
-- `GET /api/analytics?range=7d`
-- `GET /api/inventory/alerts`
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/refresh`
-- `GET /api/auth/me`
-- `POST /api/auth/logout`
-- `GET /api/auth/verify-email?token=...`
-- `POST /api/auth/resend-verification`
+```http
+Authorization: Bearer <token>
+```
 
-## Architecture Notes
+It calls `POST /auth/refresh` once after an expired access token and clears the session if refresh fails.
 
-- Cart state lives in `hooks/use-cart.ts` using Zustand persistence.
-- API clients and fallback services live in `lib/api.ts` and `lib/services/*`.
-- Mock customer and kitchen orders live in `lib/data/orders.ts`.
-- ER-diagram Mongoose models live in `lib/models/*`.
-- The customer menu UI is preserved and extended only for QR table detection and checkout routing.
-- Realtime kitchen/customer updates are prepared through Socket.IO client wiring and can be connected by setting `NEXT_PUBLIC_SOCKET_URL`.
+## Demo Users
+
+- Admin: `admin@dineflow.local` / `Admin12345`
+- Kitchen: `kitchen@dineflow.local` / `Kitchen12345`
+- Customer: `customer@dineflow.local` / `Customer12345`
+
+## Deployment
+
+Vercel:
+- Build command: `npm run build`
+- Output: Next.js default
+- Env vars:
+  - `NEXT_PUBLIC_API_URL=https://your-backend/api/v1`
+  - `NEXT_PUBLIC_SOCKET_URL=https://your-backend`
+  - `NEXT_PUBLIC_DINEFLOW_URL=https://your-vercel-app`
+
+Backend: deploy the `server` project to Render or Railway.
+Database: use MongoDB Atlas and set `MONGO_URI` in the backend only.
+
+## Screenshots
+
+Add screenshots for the menu, checkout, order tracking, kitchen board, and admin analytics dashboard here before submission.
+
+## Deployed URLs
+
+- Frontend: `https://your-frontend-url`
+- Backend API: `https://your-backend-url/api/v1`

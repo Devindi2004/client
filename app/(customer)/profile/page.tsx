@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ProtectedRoute } from "@/components/auth/protected-route";
 import { BadgeCheck, Gift, Heart, History, UserRound } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -37,7 +38,8 @@ export default function ProfilePage() {
   ];
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-4 py-6 pb-28 text-white sm:px-6">
+    <ProtectedRoute allowedRoles={["customer", "admin"]} pathname="/profile">
+      <main className="min-h-screen bg-zinc-950 px-4 py-6 pb-28 text-white sm:px-6">
       <div className="mx-auto max-w-4xl">
         <section className="rounded-lg border border-white/10 bg-[linear-gradient(135deg,rgba(6,78,59,0.34),rgba(24,24,27,0.88),rgba(124,45,18,0.18))] p-5">
           <p className="text-xs font-medium uppercase tracking-[0.24em] text-orange-200">
@@ -66,6 +68,7 @@ export default function ProfilePage() {
           ))}
         </div>
       </div>
-    </main>
+      </main>
+    </ProtectedRoute>
   );
 }

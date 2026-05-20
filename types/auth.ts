@@ -1,4 +1,4 @@
-export type UserRole = "customer" | "waiter" | "chef" | "admin";
+export type UserRole = "customer" | "waiter" | "chef" | "kitchen" | "admin";
 
 export type AuthUser = {
   id: string;
@@ -14,6 +14,7 @@ export type AuthUser = {
 
 export type AuthResponse = {
   accessToken?: string;
+  refreshToken?: string;
   emailVerificationRequired?: boolean;
   message?: string;
   redirectTo?: string;

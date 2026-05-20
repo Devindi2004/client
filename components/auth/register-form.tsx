@@ -3,21 +3,20 @@
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LockKeyhole, Mail, Phone, UserRound, UsersRound } from "lucide-react";
+import { Loader2, LockKeyhole, Mail, Phone, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
-import type { UserRole } from "@/types/auth";
+import { getRoleRedirect } from "@/lib/auth/roles";
 
 export function RegisterForm() {
   const router = useRouter();
   const { loading, register } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<UserRole>("customer");
   const passwordScore = useMemo(() => {
     return [
       password.length >= 8,
@@ -39,18 +38,19 @@ export function RegisterForm() {
         email: String(formData.get("email") ?? ""),
         password: String(formData.get("password") ?? ""),
         phone: String(formData.get("phone") ?? ""),
-        restaurantId: String(formData.get("restaurantId") ?? "") || undefined,
-        role,
+        role: "customer",
       });
 
       toast.success("Account created", {
         description: "Check your inbox to verify your email.",
       });
       router.replace(
-        payload.redirectTo ??
-          `/check-email?email=${encodeURIComponent(
-            String(formData.get("email") ?? "")
-          )}`
+        payload.emailVerificationRequired
+          ? `/check-email?email=${encodeURIComponent(
+              String(formData.get("email") ?? "")
+            )}`
+          : payload.redirectTo ??
+              (payload.user ? getRoleRedirect(payload.user.role) : "/menu")
       );
     } catch (authError) {
       setError(
@@ -72,7 +72,7 @@ export function RegisterForm() {
             </p>
             <h1 className="mt-3 text-2xl font-semibold">Join DineFlow</h1>
             <p className="mt-2 text-sm leading-6 text-zinc-400">
-              Register as a guest, staff member, chef, or administrator.
+              Register as a customer to order and track food.
             </p>
 
             <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
@@ -103,27 +103,6 @@ export function RegisterForm() {
                   className="min-h-11 border-white/10 bg-white/[0.04] text-white"
                 />
               </Field>
-              <Field label="Role" icon={<UsersRound className="size-4" />}>
-                <select
-                  value={role}
-                  onChange={(event) => setRole(event.target.value as UserRole)}
-                  className="min-h-11 w-full rounded-lg border border-white/10 bg-zinc-950 px-3 text-sm text-white outline-none ring-ring/50 transition focus-visible:border-ring focus-visible:ring-3"
-                >
-                  <option value="customer">Customer</option>
-                  <option value="waiter">Waiter / Staff</option>
-                  <option value="chef">Chef</option>
-                  <option value="admin">Admin / Owner</option>
-                </select>
-              </Field>
-              {role !== "customer" && (
-                <Field label="Restaurant ID" icon={<UsersRound className="size-4" />}>
-                  <Input
-                    name="restaurantId"
-                    placeholder="rest123"
-                    className="min-h-11 border-white/10 bg-white/[0.04] text-white"
-                  />
-                </Field>
-              )}
               <Field label="Password" icon={<LockKeyhole className="size-4" />}>
                 <Input
                   name="password"
@@ -148,25 +127,6 @@ export function RegisterForm() {
                   ))}
                 </div>
               </Field>
-
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
-                  onClick={() => toast.info("Google sign-in will connect later.")}
-                >
-                  Continue with Google
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="min-h-11 border-white/10 bg-white/5 text-white hover:bg-white/10"
-                  onClick={() => toast.info("Apple sign-in will connect later.")}
-                >
-                  Continue with Apple
-                </Button>
-              </div>
 
               {error && (
                 <p className="rounded-lg border border-rose-300/20 bg-rose-400/10 p-3 text-sm text-rose-100">

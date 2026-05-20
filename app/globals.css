@@ -130,7 +130,6 @@
   }
   html {
     @apply font-sans;
-    scroll-behavior: smooth;
   }
   ::selection {
     background: rgba(52, 211, 153, 0.32);

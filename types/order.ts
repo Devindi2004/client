@@ -19,6 +19,7 @@ export type CustomerOrder = {
   contactNumber: string;
   specialInstructions?: string;
   paymentMethod: "payhere" | "card" | "cash";
+  paymentStatus?: "pending" | "paid" | "failed";
   totalAmount: number;
   createdAt: string;
   items: OrderLineItem[];

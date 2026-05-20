@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { io, type Socket } from "socket.io-client";
+import { getAccessToken, getPersistedAuthUser } from "@/lib/api";
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -37,14 +38,27 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     }
 
     const instance: DineFlowSocket = io(url, {
+      auth: {
+        token: getAccessToken(),
+      },
       autoConnect: true,
-      reconnectionAttempts: 8,
-      reconnectionDelay: 900,
-      transports: ["websocket"],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      transports: ["websocket", "polling"],
     });
 
-    instance.on("connect", () => setConnected(true));
+    instance.io.on("reconnect_attempt", () => {
+      instance.auth = { token: getAccessToken() };
+    });
+    instance.on("connect", () => {
+      setConnected(true);
+      const user = getPersistedAuthUser();
+      if (user?.role) {
+        instance.emit("join-role", user.role);
+      }
+    });
     instance.on("disconnect", () => setConnected(false));
+    instance.on("connect_error", () => setConnected(false));
 
     const socketFrame = window.requestAnimationFrame(() => {
       setSocket(instance);

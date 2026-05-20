@@ -1,13 +1,23 @@
 "use client";
 
-import axios from "axios";
 import { create } from "zustand";
 import {
-  authApi,
+  api,
+  clearAuthSession,
+  getAccessToken,
+  getApiErrorMessage,
+  getPersistedAuthUser,
+  normalizeAuthResponse,
+  normalizeAuthUser,
+  persistAuthUser,
   refreshAccessToken,
   setAccessToken,
+  setRefreshToken,
   setSessionExpiredHandler,
-} from "@/lib/auth/api-client";
+  unwrapApiData,
+} from "@/lib/api";
+import { clearAuthState, setAuthLoading, setAuthSession } from "@/lib/store/authSlice";
+import { store } from "@/lib/store";
 import type { AuthResponse, AuthUser, UserRole } from "@/types/auth";
 
 type AuthCredentials = {
@@ -34,17 +44,9 @@ type AuthState = {
   register: (credentials: RegisterCredentials) => Promise<AuthResponse>;
 };
 
-function getAuthError(error: unknown, fallback: string) {
-  if (axios.isAxiosError(error)) {
-    const payload = error.response?.data as { error?: string } | undefined;
-    return payload?.error ?? fallback;
-  }
-
-  return error instanceof Error ? error.message : fallback;
-}
-
 export const useAuthStore = create<AuthState>((set) => {
   setSessionExpiredHandler(() => {
+    store.dispatch(clearAuthState());
     set({
       accessToken: null,
       error: "Your session expired. Please sign in again.",
@@ -62,26 +64,79 @@ export const useAuthStore = create<AuthState>((set) => {
     user: null,
 
     hydrate: async () => {
-      set({ loading: true, error: null });
+      const persistedToken = getAccessToken();
+      const persistedUser = getPersistedAuthUser();
 
-      try {
-        const payload = await refreshAccessToken();
+      if (persistedToken && persistedUser) {
         set({
-          accessToken: payload.accessToken,
+          accessToken: persistedToken,
           hydrated: true,
           loading: false,
-          user: payload.user,
+          user: persistedUser,
         });
+      }
 
-        return payload.user ?? null;
-      } catch {
-        setAccessToken(null);
+      if (!persistedToken) {
         set({
           accessToken: null,
           hydrated: true,
           loading: false,
           user: null,
         });
+        return null;
+      }
+
+      set({ loading: true, error: null });
+      store.dispatch(setAuthLoading(true));
+
+      try {
+        const response = await api.get<unknown>("/auth/me");
+        const data = unwrapApiData(response.data) as
+          | { user?: unknown }
+          | Record<string, unknown>;
+        const user = normalizeAuthUser("user" in data ? data.user : data) ?? persistedUser;
+
+        set({
+          accessToken: persistedToken,
+          hydrated: true,
+          loading: false,
+          user,
+        });
+
+        if (user) {
+          persistAuthUser(user);
+        }
+        store.dispatch(setAuthSession({ accessToken: persistedToken, user: user ?? null }));
+
+        return user ?? null;
+      } catch {
+        try {
+          const payload = await refreshAccessToken();
+          set({
+            accessToken: payload.accessToken ?? null,
+            hydrated: true,
+            loading: false,
+            user: payload.user ?? persistedUser,
+          });
+          store.dispatch(
+            setAuthSession({
+              accessToken: payload.accessToken ?? null,
+              user: payload.user ?? persistedUser ?? null,
+            })
+          );
+
+          return payload.user ?? persistedUser ?? null;
+        } catch {
+          clearAuthSession();
+        }
+
+        set({
+          accessToken: null,
+          hydrated: true,
+          loading: false,
+          user: null,
+        });
+        store.dispatch(clearAuthState());
 
         return null;
       }
@@ -89,30 +144,34 @@ export const useAuthStore = create<AuthState>((set) => {
 
     login: async (credentials) => {
       set({ loading: true, error: null });
+      store.dispatch(setAuthLoading(true));
 
       try {
-        const response = await axios.post<AuthResponse>(
-          "/api/auth/login",
-          credentials,
-          { withCredentials: true }
-        );
-        const payload = response.data;
+        const response = await api.post<unknown>("/auth/login", credentials);
+        const payload = normalizeAuthResponse(response.data);
 
         if (!payload.accessToken || !payload.user) {
           throw new Error("Login response was missing authentication data.");
         }
 
         setAccessToken(payload.accessToken);
+        setRefreshToken(payload.refreshToken ?? null);
+        persistAuthUser(payload.user);
         set({
           accessToken: payload.accessToken,
           hydrated: true,
           loading: false,
           user: payload.user,
         });
+        store.dispatch(
+          setAuthSession({ accessToken: payload.accessToken, user: payload.user })
+        );
 
         return payload;
       } catch (error) {
-        const message = getAuthError(error, "Unable to login.");
+        const message = getApiErrorMessage(error, "Unable to login.");
+        clearAuthSession();
+        store.dispatch(clearAuthState());
         set({ accessToken: null, error: message, loading: false, user: null });
         throw new Error(message);
       }
@@ -120,13 +179,13 @@ export const useAuthStore = create<AuthState>((set) => {
 
     logout: async () => {
       set({ loading: true, error: null });
+      store.dispatch(setAuthLoading(true));
 
       try {
-        await axios.post("/api/auth/logout", undefined, {
-          withCredentials: true,
-        });
+        await api.post("/auth/logout");
       } finally {
-        setAccessToken(null);
+        clearAuthSession();
+        store.dispatch(clearAuthState());
         set({
           accessToken: null,
           hydrated: true,
@@ -138,26 +197,33 @@ export const useAuthStore = create<AuthState>((set) => {
 
     register: async (credentials) => {
       set({ loading: true, error: null });
+      store.dispatch(setAuthLoading(true));
 
       try {
-        const response = await axios.post<AuthResponse>(
-          "/api/auth/register",
-          credentials,
-          { withCredentials: true }
-        );
-        const payload = response.data;
+        const response = await api.post<unknown>("/auth/register", credentials);
+        const payload = normalizeAuthResponse(response.data);
 
         setAccessToken(payload.accessToken ?? null);
+        setRefreshToken(payload.refreshToken ?? null);
+        persistAuthUser(payload.user ?? null);
         set({
           accessToken: payload.accessToken ?? null,
           hydrated: true,
           loading: false,
           user: payload.user ?? null,
         });
+        store.dispatch(
+          setAuthSession({
+            accessToken: payload.accessToken ?? null,
+            user: payload.user ?? null,
+          })
+        );
 
         return payload;
       } catch (error) {
-        const message = getAuthError(error, "Unable to register.");
+        const message = getApiErrorMessage(error, "Unable to register.");
+        clearAuthSession();
+        store.dispatch(clearAuthState());
         set({ accessToken: null, error: message, loading: false, user: null });
         throw new Error(message);
       }
@@ -166,7 +232,7 @@ export const useAuthStore = create<AuthState>((set) => {
 });
 
 export async function authFetch<T>(url: string) {
-  const response = await authApi.get<T>(url);
+  const response = await api.get<T>(url);
 
   return response.data;
 }

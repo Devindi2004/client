@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChefHat, Clock3, Flame, PackageCheck } from "lucide-react";
+import { ChefHat, Clock3, Flame, Loader2, PackageCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useSocket } from "@/components/providers/socket-provider";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockOrders } from "@/lib/data/orders";
 import { formatCurrency } from "@/lib/data/menu";
+import { getOrders, updateOrderStatus } from "@/lib/services/order-service";
 import type { CustomerOrder, OrderStatus } from "@/types/order";
 
 const columns: { label: string; status: OrderStatus; icon: typeof Clock3 }[] = [
@@ -28,7 +29,35 @@ const nextStatus: Record<OrderStatus, OrderStatus | null> = {
 export function KitchenDashboard() {
   const [orders, setOrders] = useState<CustomerOrder[]>(mockOrders);
   const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const { connected, socket } = useSocket();
+
+  useEffect(() => {
+    let active = true;
+
+    getOrders()
+      .then((items) => {
+        if (active) {
+          setOrders(items);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          toast.error("Kitchen orders unavailable", {
+            description: "Showing the local kitchen fallback board.",
+          });
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!socket) {
@@ -36,24 +65,30 @@ export function KitchenDashboard() {
     }
 
     socket.emit("kitchen:join", { restaurantId: "rest123" });
-    socket.on("order:new", (order) => {
+    const handleNewOrder = (order: CustomerOrder) => {
       setOrders((current) => [order, ...current]);
       playNotification();
       toast.success("New kitchen order", {
         description: `${order.orderNumber} for Table ${order.tableNumber}`,
       });
-    });
-    socket.on("order:update", (updatedOrder) => {
+    };
+    const handleOrderUpdate = (updatedOrder: CustomerOrder) => {
       setOrders((current) =>
         current.map((order) =>
-          order.id === updatedOrder.id ? updatedOrder : order
+          order.id === updatedOrder.id ||
+          order.orderNumber === updatedOrder.orderNumber
+            ? updatedOrder
+            : order
         )
       );
-    });
+    };
+
+    socket.on("order:new", handleNewOrder);
+    socket.on("order:update", handleOrderUpdate);
 
     return () => {
-      socket.off("order:new");
-      socket.off("order:update");
+      socket.off("order:new", handleNewOrder);
+      socket.off("order:update", handleOrderUpdate);
     };
   }, [socket]);
 
@@ -66,16 +101,34 @@ export function KitchenDashboard() {
     [orders]
   );
 
-  const moveOrder = (orderId: string, status: OrderStatus) => {
+  const moveOrder = async (orderId: string, status: OrderStatus) => {
+    const previousOrders = orders;
+
     setOrders((current) =>
       current.map((order) =>
         order.id === orderId ? { ...order, status } : order
       )
     );
-    toast.success("Order status updated", {
-      description: `Order moved to ${status}.`,
-    });
-    socket?.emit("order:status", { orderId, status });
+
+    try {
+      const updatedOrder = await updateOrderStatus(orderId, status);
+
+      if (updatedOrder) {
+        setOrders((current) =>
+          current.map((order) => (order.id === orderId ? updatedOrder : order))
+        );
+      }
+
+      toast.success("Order status updated", {
+        description: `Order moved to ${status}.`,
+      });
+      socket?.emit("order:status", { orderId, status });
+    } catch {
+      setOrders(previousOrders);
+      toast.error("Unable to update order", {
+        description: "The kitchen board was restored to its previous state.",
+      });
+    }
   };
 
   const kitchenMetrics = [
@@ -113,6 +166,13 @@ export function KitchenDashboard() {
             </div>
           ))}
         </section>
+
+        {loading && (
+          <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.035] p-4 text-sm text-zinc-300">
+            <Loader2 className="size-4 animate-spin text-emerald-300" />
+            Loading kitchen orders from backend
+          </div>
+        )}
 
         <section className="mt-5 grid gap-4 xl:grid-cols-4">
           {groupedOrders.map((column) => {

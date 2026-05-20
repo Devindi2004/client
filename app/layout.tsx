@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { Viewport } from "next";
 import { Inter } from "next/font/google";
+import Script from "next/script";
 import { CustomerMobileNav } from "@/components/layout/customer-mobile-nav";
 import { AppProviders } from "@/components/providers/app-providers";
 import { Toaster } from "@/components/ui/sonner";
@@ -9,6 +10,7 @@ import "./globals.css";
 const inter = Inter({
   subsets: ["latin"],
   display: "swap",
+  preload: false,
   variable: "--font-inter",
 });
 
@@ -65,10 +67,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" className="dark" data-scroll-behavior="smooth" suppressHydrationWarning>
       <body
         className={`${inter.variable} ${inter.className} min-h-screen overflow-x-hidden bg-zinc-950 pb-20 text-white antialiased md:pb-0`}
       >
+        <Script src="https://www.payhere.lk/lib/payhere.js" strategy="afterInteractive" />
         <AppProviders>
           <div className="min-h-screen overflow-x-hidden">{children}</div>
           <CustomerMobileNav />

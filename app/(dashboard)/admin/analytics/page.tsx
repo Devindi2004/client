@@ -11,11 +11,13 @@ import {
   Star,
   TrendingUp,
 } from "lucide-react";
+import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AnalyticsCharts } from "@/components/dashboard/analytics-charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getAnalyticsDashboardData, formatLkr } from "@/lib/data/analytics";
+import { formatLkr } from "@/lib/data/analytics";
+import { getAnalytics } from "@/lib/services/analytics-service";
 import { cn } from "@/lib/utils";
 import type { AnalyticsRange } from "@/types/analytics";
 
@@ -49,10 +51,11 @@ type AnalyticsPageProps = {
 export default async function AnalyticsPage({ searchParams }: AnalyticsPageProps) {
   const params = await searchParams;
   const selectedRange = isAnalyticsRange(params.range) ? params.range : "7d";
-  const data = getAnalyticsDashboardData(selectedRange);
+  const data = await getAnalytics(selectedRange);
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+    <ProtectedRoute allowedRoles={["admin"]} pathname="/admin/analytics">
+      <main className="min-h-screen bg-zinc-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="flex flex-col gap-5 rounded-lg border border-white/10 bg-[linear-gradient(135deg,rgba(6,78,59,0.28),rgba(24,24,27,0.78)_48%,rgba(124,45,18,0.2))] p-5 shadow-2xl shadow-black/20 sm:p-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -224,7 +227,8 @@ export default async function AnalyticsPage({ searchParams }: AnalyticsPageProps
           </div>
         </section>
       </div>
-    </main>
+      </main>
+    </ProtectedRoute>
   );
 }
 
