@@ -49,7 +49,7 @@ function calculateSummary(items: CartItem[]): CartSummary {
     (total, item) => total + item.price * item.quantity,
     0
   );
-  const serviceCharge = Math.round(subtotal * 0.08);
+  const serviceCharge = Math.round(subtotal * 0.1);
   const tax = Math.round(subtotal * 0.025);
 
   return {
