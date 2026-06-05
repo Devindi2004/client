@@ -2,14 +2,18 @@ import type { UserRole } from "@/types/auth";
 
 export function getRoleRedirect(role: UserRole) {
   if (role === "admin") {
-    return "/admin/analytics";
+    return "/admin/dashboard";
   }
 
-  if (role === "chef" || role === "waiter" || role === "kitchen") {
-    return "/kitchen";
+  if (role === "waiter") {
+    return "/waiter/dashboard";
   }
 
-  return "/menu";
+  if (role === "chef" || role === "kitchen") {
+    return "/kitchen/dashboard";
+  }
+
+  return "/customer/menu";
 }
 
 export function canAccessRoute(role: UserRole, pathname: string) {
@@ -21,12 +25,16 @@ export function canAccessRoute(role: UserRole, pathname: string) {
     return (
       role === "admin" ||
       role === "chef" ||
-      role === "waiter" ||
       role === "kitchen"
     );
   }
 
+  if (pathname.startsWith("/waiter")) {
+    return role === "admin" || role === "waiter";
+  }
+
   if (
+    pathname.startsWith("/customer") ||
     pathname.startsWith("/profile") ||
     pathname.startsWith("/checkout") ||
     pathname.startsWith("/tracking")

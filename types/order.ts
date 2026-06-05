@@ -1,6 +1,6 @@
 import type { CartItem } from "@/types/menu";
 
-export type OrderStatus = "new" | "preparing" | "ready" | "completed";
+export type OrderStatus = "new" | "accepted" | "preparing" | "ready" | "completed";
 
 export type OrderLineItem = {
   id: string;

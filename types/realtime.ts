@@ -6,6 +6,7 @@ export type ServerToClientEvents = {
   "payment-updated": (order: CustomerOrder) => void;
   "order:new": (order: CustomerOrder) => void;
   "order:update": (order: CustomerOrder) => void;
+  "order:ready": (order: CustomerOrder) => void;
   "kitchen:ping": (payload: { activeOrders: number }) => void;
 };
 

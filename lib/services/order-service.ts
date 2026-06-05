@@ -156,6 +156,10 @@ function normalizeStatus(value: string | undefined): OrderStatus {
     return "new";
   }
 
+  if (lower === "accepted") {
+    return "accepted";
+  }
+
   if (lower === "preparing" || lower === "in_progress") {
     return "preparing";
   }

@@ -14,13 +14,14 @@ import type { CustomerOrder, OrderStatus } from "@/types/order";
 
 const columns: { label: string; status: OrderStatus; icon: typeof Clock3 }[] = [
   { label: "New Orders", status: "new", icon: Clock3 },
+  { label: "Accepted", status: "accepted", icon: PackageCheck },
   { label: "Preparing", status: "preparing", icon: Flame },
   { label: "Ready", status: "ready", icon: ChefHat },
-  { label: "Completed", status: "completed", icon: PackageCheck },
 ];
 
 const nextStatus: Record<OrderStatus, OrderStatus | null> = {
-  new: "preparing",
+  new: "accepted",
+  accepted: "preparing",
   preparing: "ready",
   ready: "completed",
   completed: null,
