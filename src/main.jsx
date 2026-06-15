@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
+import { Html5QrcodeScanner } from "html5-qrcode";
 import { io } from "socket.io-client";
 import {
   BarChart3,
@@ -16,6 +17,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronDown,
+  Edit3,
   Eye,
   Home,
   LayoutDashboard,
@@ -61,10 +63,13 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
 const DEFAULT_RESTAURANT_ID = localStorage.getItem("dineflow_restaurant_id") || "";
 const SESSION_UPDATED_EVENT = "dineflow-session-updated";
+const AUTH_TOKEN_KEY = "dineflow_token";
+const AUTH_REFRESH_KEY = "dineflow_refresh";
+const AUTH_USER_KEY = "dineflow_user";
 
 const api = axios.create({ baseURL: API_URL });
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("dineflow_token");
+  const token = getStoredToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -77,26 +82,77 @@ const apiErrorMessage = (err, fallback = "Request failed.") => {
 
 function readStoredUser() {
   try {
-    return JSON.parse(localStorage.getItem("dineflow_user") || "null");
+    const sessionUser = sessionStorage.getItem(AUTH_USER_KEY);
+    if (sessionUser) return JSON.parse(sessionUser);
+
+    const legacyUser = localStorage.getItem(AUTH_USER_KEY);
+    const legacyToken = localStorage.getItem(AUTH_TOKEN_KEY);
+    const legacyRefresh = localStorage.getItem(AUTH_REFRESH_KEY);
+    if (legacyUser || legacyToken || legacyRefresh) {
+      if (legacyUser) sessionStorage.setItem(AUTH_USER_KEY, legacyUser);
+      if (legacyToken) sessionStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
+      if (legacyRefresh) sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
+      localStorage.removeItem(AUTH_USER_KEY);
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem(AUTH_REFRESH_KEY);
+    }
+    return JSON.parse(legacyUser || "null");
   } catch {
     return null;
   }
 }
 
+function getStoredToken() {
+  const sessionToken = sessionStorage.getItem(AUTH_TOKEN_KEY);
+  if (sessionToken) return sessionToken;
+
+  const legacyToken = localStorage.getItem(AUTH_TOKEN_KEY);
+  const legacyRefresh = localStorage.getItem(AUTH_REFRESH_KEY);
+  if (legacyToken) {
+    sessionStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
+    if (legacyRefresh) sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_REFRESH_KEY);
+  }
+  return legacyToken;
+}
+
+function getStoredRefreshToken() {
+  const sessionRefresh = sessionStorage.getItem(AUTH_REFRESH_KEY);
+  if (sessionRefresh) return sessionRefresh;
+
+  const legacyRefresh = localStorage.getItem(AUTH_REFRESH_KEY);
+  if (legacyRefresh) {
+    sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
+    localStorage.removeItem(AUTH_REFRESH_KEY);
+  }
+  return legacyRefresh;
+}
+
 function storeAuthSession(data) {
-  if (data?.accessToken) localStorage.setItem("dineflow_token", data.accessToken);
-  if (data?.refreshToken) localStorage.setItem("dineflow_refresh", data.refreshToken);
+  if (data?.accessToken) sessionStorage.setItem(AUTH_TOKEN_KEY, data.accessToken);
+  if (data?.refreshToken) sessionStorage.setItem(AUTH_REFRESH_KEY, data.refreshToken);
   if (data?.user) {
-    localStorage.setItem("dineflow_user", JSON.stringify(data.user));
+    sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
     if (data.user.restaurantId) localStorage.setItem("dineflow_restaurant_id", data.user.restaurantId);
   }
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_REFRESH_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+  window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
+}
+
+function updateStoredUser(user) {
+  if (!user) return;
+  sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  if (user.restaurantId) localStorage.setItem("dineflow_restaurant_id", user.restaurantId);
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
 function clearStoredSession() {
-  localStorage.removeItem("dineflow_token");
-  localStorage.removeItem("dineflow_refresh");
-  localStorage.removeItem("dineflow_user");
+  sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  sessionStorage.removeItem(AUTH_REFRESH_KEY);
+  sessionStorage.removeItem(AUTH_USER_KEY);
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
@@ -113,7 +169,7 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    const refreshToken = localStorage.getItem("dineflow_refresh");
+    const refreshToken = getStoredRefreshToken();
     if (!refreshToken) {
       clearStoredSession();
       return Promise.reject(error);
@@ -204,11 +260,11 @@ function ThemeProvider({ children }) {
 
 function AuthProvider({ children }) {
   const [user, setUser] = useState(() => readStoredUser());
-  const [token, setToken] = useState(() => localStorage.getItem("dineflow_token"));
+  const [token, setToken] = useState(() => getStoredToken());
 
   useEffect(() => {
     const syncSession = () => {
-      setToken(localStorage.getItem("dineflow_token"));
+      setToken(getStoredToken());
       setUser(readStoredUser());
     };
     window.addEventListener(SESSION_UPDATED_EVENT, syncSession);
@@ -239,13 +295,20 @@ function AuthProvider({ children }) {
     return data.user;
   };
 
+  const updateProfile = async (payload) => {
+    const data = unwrap(await api.patch("/auth/me", payload));
+    updateStoredUser(data.user);
+    setUser(data.user);
+    return data.user;
+  };
+
   const logout = () => {
     clearStoredSession();
     setToken(null);
     setUser(null);
   };
 
-  return <AuthContext.Provider value={{ user, token, login, register, googleLogin, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, token, login, register, googleLogin, updateProfile, logout }}>{children}</AuthContext.Provider>;
 }
 
 function CartProvider({ children }) {
@@ -270,10 +333,21 @@ function SocketProvider({ children }) {
   const [socket, setSocket] = useState(null);
   const [alerts, setAlerts] = useState([]);
   useEffect(() => {
+    if (!token || !user?.role) {
+      setSocket(null);
+      setAlerts([]);
+      return undefined;
+    }
+    const pushAlert = (text) => {
+      setAlerts((current) => {
+        const alert = { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, text };
+        return [alert, ...current.filter((entry) => entry.text !== text)].slice(0, 5);
+      });
+    };
     const connection = io(SOCKET_URL, { auth: { token } });
-    if (user?.role) connection.emit("join-role", user.role === "chef" || user.role === "staff" ? "kitchen" : user.role);
-    connection.on("order:ready", (order) => setAlerts((current) => [`${order.orderNumber} ready for Table ${order.tableNumber}`, ...current].slice(0, 5)));
-    connection.on("order:new", (order) => setAlerts((current) => [`New order ${order.orderNumber}`, ...current].slice(0, 5)));
+    connection.emit("join-role", user.role === "chef" || user.role === "staff" ? "kitchen" : user.role);
+    connection.on("order:ready", (order) => pushAlert(`${order.orderNumber} ready for Table ${order.tableNumber}`));
+    connection.on("order:new", (order) => pushAlert(`New order ${order.orderNumber}`));
     setSocket(connection);
     return () => connection.disconnect();
   }, [token, user?.role]);
@@ -301,6 +375,44 @@ function ThemeToggle() {
       <span className={isDark ? "active" : ""}><Moon size={16} /> Dark</span>
       <span className={!isDark ? "active" : ""}><Sun size={16} /> Light</span>
     </button>
+  );
+}
+
+function PwaInstallButton() {
+  const [promptEvent, setPromptEvent] = useState(null);
+  const [installed, setInstalled] = useState(() => window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setPromptEvent(event);
+    };
+    const handleInstalled = () => {
+      setInstalled(true);
+      setPromptEvent(null);
+    };
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, []);
+
+  const install = async () => {
+    if (!promptEvent) return;
+    promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if (choice.outcome === "accepted") setInstalled(true);
+    setPromptEvent(null);
+  };
+
+  if (installed) return <span className="waiter-app-installed"><Smartphone size={16} /> Installed</span>;
+
+  return (
+    <Button className="waiter-install-btn" variant="soft" onClick={install} disabled={!promptEvent}>
+      <Smartphone size={16} /> Install app
+    </Button>
   );
 }
 
@@ -356,11 +468,18 @@ function Header({ title, actions }) {
   );
 }
 
-function Sidebar({ links }) {
+function Sidebar({ links, showPremium = true }) {
+  const location = useLocation();
   return (
     <aside className="sidebar">
-      <Link to="/" className="brand"><ChefHat /> DineFlow</Link>
-      <nav>{links.map((link) => <Link key={link.to} to={link.to}><link.icon size={18} /> {link.label}</Link>)}</nav>
+      <Link to="/" className="brand"><ChefHat /> <span>DineFlow<small>Restaurant Management</small></span></Link>
+      <nav>{links.map((link) => <Link className={location.pathname === link.to ? "active" : ""} key={link.to} to={link.to}><link.icon size={18} /> {link.label}</Link>)}</nav>
+      {showPremium && <div className="sidebar-premium">
+        <div><ChefHat size={20} /></div>
+        <strong>DineFlow Premium</strong>
+        <p>Manage your restaurant efficiently with DineFlow.</p>
+        <span>View Plan <ArrowRight size={14} /></span>
+      </div>}
     </aside>
   );
 }
@@ -706,19 +825,22 @@ function LoginPage({ mode = "login" }) {
 }
 
 function useResource(path, fallback = []) {
+  const auth = useAuth();
   const [data, setData] = useState(fallback);
   const [loading, setLoading] = useState(true);
   const load = async () => {
+    if (!path) return;
     setLoading(true);
     try {
       setData(unwrap(await api.get(path)));
-    } catch {
+    } catch (err) {
+      if (err.response?.status === 401 && auth?.token) auth.logout();
       setData(fallback);
     } finally {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [path]);
+  useEffect(() => { load(); }, [path, auth?.token]);
   return { data, setData, loading, load };
 }
 
@@ -1583,6 +1705,7 @@ function TrackingPage() {
   const { logout } = useAuth();
   const orders = orderId ? (data ? [data] : []) : data;
   const activeOrders = orders.filter((order) => isActiveOrder(order));
+  const visibleOrders = orderId ? orders.filter(Boolean) : activeOrders;
   const completedToday = orders.filter((order) => {
     const date = new Date(order.updatedAt || order.createdAt || Date.now());
     const today = new Date();
@@ -1635,9 +1758,9 @@ function TrackingPage() {
             <p>Check the order number and try again.</p>
             <Link className="btn btn-primary" to="/customer/menu"><ShoppingCart size={16} /> Place an order</Link>
           </section>
-        ) : activeOrders.length ? (
+        ) : visibleOrders.length ? (
           <section className="tracking-live-list">
-            {activeOrders.map((order) => <TrackingOrderCard order={order} key={order._id || order.orderNumber} />)}
+            {visibleOrders.map((order) => <TrackingOrderCard order={order} key={order._id || order.orderNumber} />)}
           </section>
         ) : (
           <section className="tracking-empty-panel">
@@ -1653,7 +1776,7 @@ function TrackingPage() {
 }
 
 function isActiveOrder(order) {
-  return order && !["completed", "served", "cancelled"].includes(order.status);
+  return order && !["completed", "cancelled"].includes(order.status);
 }
 
 function TrackingStat({ icon: Icon, label, value, text }) {
@@ -2123,23 +2246,279 @@ function AIChatbot({ menu = [], orders = [] }) {
 
 function StaffLayout({ role, children }) {
   const links = role === "admin"
-    ? [{ to: "/admin", label: "Dashboard", icon: LayoutDashboard }, { to: "/admin/users", label: "Users", icon: Users }, { to: "/admin/menu", label: "Menu", icon: Utensils }, { to: "/admin/tables", label: "Tables", icon: Table2 }, { to: "/admin/reservations", label: "Reservations", icon: CalendarDays }, { to: "/admin/reports", label: "Reports", icon: BarChart3 }]
+    ? [{ to: "/admin", label: "Dashboard", icon: LayoutDashboard }, { to: "/admin/users", label: "Users", icon: Users }, { to: "/admin/attendance", label: "Attendance", icon: CalendarDays }, { to: "/admin/payroll", label: "Payroll", icon: WalletCards }, { to: "/admin/menu", label: "Menu", icon: Utensils }, { to: "/admin/inventory", label: "Inventory", icon: PackageCheck }, { to: "/admin/tables", label: "Tables", icon: Table2 }, { to: "/admin/reservations", label: "Reservations", icon: CalendarDays }, { to: "/admin/reports", label: "Reports", icon: BarChart3 }]
     : role === "waiter"
-      ? [{ to: "/waiter", label: "Orders", icon: Bell }, { to: "/waiter/tables", label: "Tables", icon: Table2 }, { to: "/waiter/manual-order", label: "Manual", icon: Plus }]
-      : [{ to: "/kitchen", label: "Board", icon: ChefHat }, { to: "/kitchen/inventory", label: "Stock", icon: ClipboardList }];
-  return <div className="dashboard-shell"><Sidebar links={links} /><main>{children}</main></div>;
+      ? [{ to: "/waiter", label: "Orders", icon: Bell }, { to: "/waiter/attendance", label: "Attendance", icon: Clock }, { to: "/waiter/profile", label: "Profile", icon: Users }, { to: "/waiter/tables", label: "Tables", icon: Table2 }, { to: "/waiter/manual-order", label: "Manual", icon: Plus }]
+      : [{ to: "/kitchen", label: "Board", icon: ChefHat }, { to: "/kitchen/attendance", label: "Attendance", icon: Clock }, { to: "/kitchen/inventory", label: "Stock", icon: ClipboardList }];
+  return <div className={`dashboard-shell ${role === "admin" ? "admin-shell" : ""} ${role}-shell`}><Sidebar links={links} showPremium={role !== "waiter"} /><main>{children}</main></div>;
+}
+
+function StaffAttendanceWidget() {
+  const { data: records, load } = useResource("/staff/attendance/me");
+  const { data: qrData } = useResource("/staff/attendance/qr", {});
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
+  const [manualQr, setManualQr] = useState("");
+  const scannerId = useRef(`attendance-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const latest = records[0];
+  const activeRecord = records.find((record) => record.checkInTime && !record.checkOutTime);
+  const todayKey = new Date().toDateString();
+  const todayRecord = records.find((record) => new Date(record.date).toDateString() === todayKey) || activeRecord || latest;
+  const isCheckedIn = Boolean(activeRecord);
+  const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
+  const workedToday = todayRecord?.workingHours || todayRecord?.workedHours || 0;
+  const getLocation = () => new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve({});
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+      () => resolve({}),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  });
+
+  const checkIn = async () => {
+    setError("");
+    setMessage("");
+    try {
+      const location = await getLocation();
+      await api.post("/staff/attendance/check-in", location);
+      setMessage("Checked in successfully.");
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not check in."));
+    }
+  };
+
+  const checkOut = async () => {
+    setError("");
+    setMessage("");
+    try {
+      const location = await getLocation();
+      await api.patch("/staff/attendance/check-out", location);
+      setMessage("Checked out successfully.");
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not check out."));
+    }
+  };
+
+  const markFromQr = async (qrPayload) => {
+    setError("");
+    setMessage("");
+    try {
+      const location = await getLocation();
+      const result = unwrap(await api.post("/staff/attendance/scan", { qrPayload, ...location }));
+      setMessage(result?.checkOutTime ? "Checked out from QR." : "Checked in from QR.");
+      setManualQr("");
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not mark attendance from QR."));
+    }
+  };
+
+  useEffect(() => {
+    if (!scanOpen) return undefined;
+    const scanner = new Html5QrcodeScanner(scannerId.current, { fps: 10, qrbox: { width: 240, height: 240 } }, false);
+    scanner.render(
+      async (decodedText) => {
+        await scanner.clear();
+        setScanOpen(false);
+        await markFromQr(decodedText);
+      },
+      () => {}
+    );
+    return () => {
+      scanner.clear().catch(() => {});
+    };
+  }, [scanOpen]);
+
+  return (
+    <section className="chart-card staff-attendance-widget">
+      <div className="reservation-section-title">
+        <Clock size={18} />
+        <h2>Mark attendance</h2>
+      </div>
+      {message && <p className="success">{message}</p>}
+      {error && <p className="error">{error}</p>}
+      <div className="staff-attendance-actions">
+        <Button onClick={checkIn} disabled={isCheckedIn}><Clock size={16} /> Check in</Button>
+        <Button variant="soft" onClick={checkOut} disabled={!isCheckedIn}><CheckCircle2 size={16} /> Check out</Button>
+        <Button variant="ghost" onClick={() => setScanOpen((current) => !current)}><QrCode size={16} /> {scanOpen ? "Close scanner" : "Scan QR"}</Button>
+        <Button variant="soft" onClick={() => qrData.qrPayload && markFromQr(qrData.qrPayload)} disabled={!qrData.qrPayload}><ScanQrCode size={16} /> Use my QR</Button>
+      </div>
+      <div className="staff-attendance-qr-panel">
+        <div className="staff-attendance-qr-card">
+          {qrData.qrPayload ? <QRCodeSVG value={qrData.qrPayload} size={116} /> : <QrCode size={48} />}
+          <div>
+            <strong>{qrData.staffName || "Staff QR"}</strong>
+            <span>{qrData.role || "attendance"} unique QR code</span>
+          </div>
+        </div>
+        <div className="staff-attendance-scan-box">
+          {scanOpen && <div id={scannerId.current} className="staff-qr-reader" />}
+          <label>
+            <span className="sr-only">Attendance QR payload</span>
+            <Input value={manualQr} onChange={(event) => setManualQr(event.target.value)} placeholder="Paste scanned QR code here" />
+          </label>
+          <Button variant="ghost" onClick={() => markFromQr(manualQr)} disabled={!manualQr.trim()}><ScanQrCode size={16} /> Mark from code</Button>
+        </div>
+      </div>
+      <div className="staff-attendance-summary">
+        <span>
+          <small>Status</small>
+          <strong>{isCheckedIn ? "Checked in" : todayRecord?.checkOutTime ? "Checked out" : "Not marked"}</strong>
+        </span>
+        <span>
+          <small>Check in</small>
+          <strong>{formatTime(todayRecord?.checkInTime)}</strong>
+        </span>
+        <span>
+          <small>Check out</small>
+          <strong>{formatTime(todayRecord?.checkOutTime)}</strong>
+        </span>
+        <span>
+          <small>Today hours</small>
+          <strong>{workedToday}h</strong>
+        </span>
+      </div>
+      <p className="muted">{todayRecord ? `${new Date(todayRecord.date).toLocaleDateString()} - ${todayRecord.status}` : "No attendance record yet."}</p>
+    </section>
+  );
 }
 
 function WaiterDashboard() {
+  const { user } = useAuth();
   const { data: orders, load } = useResource("/waiter/orders");
-  const { alerts } = useSocket();
+  const { alerts, socket } = useSocket();
   const markServed = async (id) => { await api.patch(`/waiter/orders/${id}/served`); load(); };
+  const markCompleted = async (id) => { await api.patch(`/waiter/orders/${id}/completed`); load(); };
+  const isToday = (value) => value && new Date(value).toDateString() === new Date().toDateString();
+  const servedById = (order) => typeof order.servedBy === "object" ? (order.servedBy?._id || order.servedBy?.id) : order.servedBy;
+  const isServedByMeToday = (order) => order.status === "served" && servedById(order) === user?.id && isToday(order.servedAt || order.updatedAt);
+  const isCompletedByMeToday = (order) => order.status === "completed" && servedById(order) === user?.id && isToday(order.servedAt || order.updatedAt);
+  const waiterStatuses = [
+    { key: "accepted", emptyTitle: "No orders accepted yet.", emptyText: "New orders will appear here.", icon: ClipboardList },
+    { key: "preparing", emptyTitle: "No orders preparing.", emptyText: "Orders being prepared will appear here.", icon: ChefHat },
+    { key: "ready", emptyTitle: "No ready orders.", emptyText: "Kitchen-ready orders will appear here.", icon: Bell },
+    { key: "served", emptyTitle: "No orders served by you today.", emptyText: "Orders you serve today will appear here.", icon: CheckCircle2 },
+    { key: "completed", emptyTitle: "No completed orders today.", emptyText: "Completed orders you handled today will appear here.", icon: CheckCircle2 },
+  ];
+  useEffect(() => {
+    if (!socket) return undefined;
+    socket.emit("join-role", "waiter");
+    socket.on("order:update", load);
+    socket.on("order:ready", load);
+    return () => {
+      socket.off("order:update", load);
+      socket.off("order:ready", load);
+    };
+  }, [socket]);
   return (
     <StaffLayout role="waiter">
-      <Header title="Waiter mobile dashboard" />
-      <div className="alert-strip">{alerts.map((alert) => <span key={alert}><Bell size={14} /> {alert}</span>)}</div>
-      <div className="kanban">{["pending", "preparing", "ready"].map((status) => <section key={status}><h2>{status}</h2>{orders.filter((order) => order.status === status).map((order) => <OrderCard order={order} key={order._id} actions={<Button onClick={() => markServed(order._id)}>Served</Button>} />)}</section>)}</div>
+      <Header title="Waiter mobile dashboard" actions={<PwaInstallButton />} />
+      <div className="alert-strip">{alerts.map((alert) => <span key={alert.id}><Bell size={14} /> {alert.text}</span>)}</div>
+      <div className="kanban waiter-order-board">
+        {waiterStatuses.map(({ key, emptyTitle, emptyText, icon: EmptyIcon }) => {
+          const statusOrders = key === "served"
+            ? orders.filter(isServedByMeToday)
+            : key === "completed"
+              ? orders.filter(isCompletedByMeToday)
+              : orders.filter((order) => order.status === key);
+          return (
+            <section key={key}>
+              <h2>{key}<span>{statusOrders.length}</span></h2>
+              {statusOrders.length ? (
+                statusOrders.map((order) => (
+                  <OrderCard
+                    order={order}
+                    key={order._id}
+                    actions={
+                      key === "ready"
+                        ? <Button onClick={() => markServed(order._id)}>Served</Button>
+                        : key === "served"
+                          ? <Button variant="soft" onClick={() => markCompleted(order._id)}>Complete</Button>
+                          : null
+                    }
+                  />
+                ))
+              ) : (
+                <div className="waiter-empty-column">
+                  <EmptyIcon size={48} />
+                  <strong>{emptyTitle}</strong>
+                  <p>{emptyText}</p>
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
     </StaffLayout>
+  );
+}
+
+function StaffQrDownloadCard({ title = "Attendance QR", description = "Download this QR and use it only at the Staff Attendance Kiosk. Dashboard attendance marking has been removed." } = {}) {
+  const { data: qrData } = useResource("/staff/attendance/qr", {});
+  const qrRef = useRef(null);
+  const [message, setMessage] = useState("");
+
+  const downloadQr = () => {
+    if (!qrRef.current || !qrData.qrPayload) return;
+    const svgText = new XMLSerializer().serializeToString(qrRef.current);
+    const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 760;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff8e1";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "#21170b";
+      context.font = "700 34px Arial";
+      context.fillText("DineFlow Attendance QR", 52, 70);
+      context.font = "600 22px Arial";
+      context.fillText(qrData.staffName || "Staff member", 52, 112);
+      context.fillStyle = "#8b6f00";
+      context.font = "700 18px Arial";
+      context.fillText(`${qrData.role || "staff"} unique QR code`, 52, 144);
+      context.drawImage(image, 120, 190, 400, 400);
+      context.fillStyle = "#5f5546";
+      context.font = "600 16px Arial";
+      context.fillText("Use this QR at the Staff Attendance Kiosk.", 52, 670);
+      URL.revokeObjectURL(url);
+      const link = document.createElement("a");
+      link.download = `dineflow-attendance-qr-${qrData.staffName || "staff"}.png`.replace(/\s+/g, "-").toLowerCase();
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+      setMessage("QR downloaded.");
+    };
+    image.src = url;
+  };
+
+  return (
+    <section className="chart-card waiter-qr-download-card">
+      <div className="reservation-section-title">
+        <QrCode size={18} />
+        <h2>{title}</h2>
+      </div>
+      <div className="waiter-qr-download-body">
+        <div className="waiter-qr-frame">
+          {qrData.qrPayload ? <QRCodeSVG ref={qrRef} value={qrData.qrPayload} size={180} /> : <QrCode size={72} />}
+        </div>
+        <div>
+          <span className="eyebrow">Kiosk access</span>
+          <h3>{qrData.staffName || "Your attendance QR"}</h3>
+          <p>{description}</p>
+          <Button onClick={downloadQr} disabled={!qrData.qrPayload}><QrCode size={16} /> Download QR</Button>
+          {message && <p className="success">{message}</p>}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2154,21 +2533,559 @@ function WaiterTables() {
   );
 }
 
+function WaiterAttendancePage() {
+  const { data: records } = useResource("/staff/attendance/me");
+  const columns = [
+    { key: "date", label: "Date", render: (row) => new Date(row.date).toLocaleDateString() },
+    { key: "checkInTime", label: "Check in", render: (row) => row.checkInTime ? new Date(row.checkInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-" },
+    { key: "checkOutTime", label: "Check out", render: (row) => row.checkOutTime ? new Date(row.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-" },
+    { key: "workingHours", label: "Hours", render: (row) => `${row.workingHours || row.workedHours || 0}h` },
+    { key: "overtimeHours", label: "Overtime", render: (row) => `${row.overtimeHours || 0}h` },
+    { key: "method", label: "Method", render: (row) => <StatusBadge status={row.method || "manual"} /> },
+    { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+  ];
+
+  return (
+    <StaffLayout role="waiter">
+      <Header title="My attendance" />
+      <StaffQrDownloadCard />
+      <section className="chart-card waiter-attendance-records">
+        <div className="reservation-section-title">
+          <CalendarDays size={18} />
+          <h2>Recent attendance</h2>
+        </div>
+        {records.length ? (
+          <DataTable columns={columns} rows={records} />
+        ) : (
+          <EmptyState icon={Clock} title="No attendance records" text="Use check in to mark your first shift." />
+        )}
+      </section>
+    </StaffLayout>
+  );
+}
+
+function WaiterProfilePage() {
+  const { user, updateProfile } = useAuth();
+  const [form, setForm] = useState({
+    name: user?.name || "",
+    email: user?.email || "",
+    phone: user?.phone || "",
+    whatsappNumber: user?.whatsappNumber || "",
+    address: user?.address || "",
+  });
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      name: user?.name || "",
+      email: user?.email || "",
+      phone: user?.phone || "",
+      whatsappNumber: user?.whatsappNumber || "",
+      address: user?.address || "",
+    });
+  }, [user?.id, user?.name, user?.email, user?.phone, user?.whatsappNumber, user?.address]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setSaving(true);
+    try {
+      await updateProfile(form);
+      setMessage("Profile updated successfully.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not update profile."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <StaffLayout role="waiter">
+      <Header title="My profile" />
+      <section className="chart-card waiter-profile-card">
+        <div className="waiter-profile-head">
+          <div className="waiter-profile-avatar">{user?.name?.slice(0, 2)?.toUpperCase() || "DF"}</div>
+          <div>
+            <span className="eyebrow">Waiter profile</span>
+            <h2>{user?.name || "Waiter"}</h2>
+            <p>Manage your contact details and account information.</p>
+          </div>
+        </div>
+        {message && <p className="success">{message}</p>}
+        {error && <p className="error">{error}</p>}
+        <form className="waiter-profile-form" onSubmit={submit}>
+          <label>
+            <span>Name</span>
+            <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+          </label>
+          <label>
+            <span>Email</span>
+            <Input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+          </label>
+          <label>
+            <span>Phone number</span>
+            <Input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="077 123 4567" />
+          </label>
+          <label>
+            <span>WhatsApp number</span>
+            <Input value={form.whatsappNumber} onChange={(event) => setForm({ ...form, whatsappNumber: event.target.value })} placeholder="94771234567" />
+          </label>
+          <label className="waiter-profile-wide">
+            <span>Address</span>
+            <textarea className="input textarea" value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Optional address" />
+          </label>
+          <div className="waiter-profile-wide waiter-profile-actions">
+            <Button type="submit" disabled={saving}><CheckCircle2 size={16} /> {saving ? "Saving..." : "Save changes"}</Button>
+          </div>
+        </form>
+      </section>
+    </StaffLayout>
+  );
+}
+
+function StaffAttendanceKioskPage() {
+  const [qrPayload, setQrPayload] = useState("");
+  const [activeTab, setActiveTab] = useState("scan");
+  const [attendanceLog, setAttendanceLog] = useState([]);
+  const [status, setStatus] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const scannerId = useRef(`kiosk-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const activeRecord = status?.record;
+  const checkedIn = status?.status === "checked-in";
+  const hasScannedStaff = Boolean(qrPayload && status?.staff);
+  const now = new Date();
+  const kioskDate = now.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const kioskTime = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-";
+  const cleanQrPayload = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "string") return cleanQrPayload(parsed);
+      if (parsed?.qrPayload) return cleanQrPayload(parsed.qrPayload);
+      if (parsed?.attendanceQrPayload) return cleanQrPayload(parsed.attendanceQrPayload);
+    } catch {
+      // Most scanners return the plain QR text.
+    }
+    try {
+      const url = new URL(text);
+      return cleanQrPayload(url.searchParams.get("qr") || url.searchParams.get("qrPayload") || url.searchParams.get("attendanceQrPayload") || url.searchParams.get("token") || text);
+    } catch {
+      return text;
+    }
+  };
+  const getLocation = () => new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve({});
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+      () => resolve({}),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  });
+
+  const loadStatus = async (nextQrPayload = qrPayload, options = {}) => {
+    const cleanedPayload = cleanQrPayload(nextQrPayload);
+    if (!cleanedPayload) {
+      setStatus(null);
+      setQrPayload("");
+      setError("Scan a valid staff attendance QR code.");
+      return false;
+    }
+    setError("");
+    setMessage("");
+    setLoading(true);
+    try {
+      const data = unwrap(await api.post("/attendance-kiosk/status", { qrPayload: cleanedPayload }));
+      setStatus(data);
+      if (options.select) setQrPayload(cleanedPayload);
+      return true;
+    } catch (err) {
+      setStatus(null);
+      setQrPayload("");
+      setAttendanceLog([]);
+      setError(apiErrorMessage(err, "Could not find attendance status."));
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const markAttendance = async (action, nextQrPayload = qrPayload) => {
+    const cleanedPayload = cleanQrPayload(nextQrPayload);
+    if (!cleanedPayload) {
+      setError("Scan a valid staff attendance QR code before marking attendance.");
+      return;
+    }
+    setError("");
+    setMessage("");
+    setLoading(true);
+    try {
+      const location = await getLocation();
+      const data = unwrap(await api.post("/attendance-kiosk/mark", { qrPayload: cleanedPayload, action, ...location }));
+      setStatus({ staff: data.staff, record: data.record, status: data.action });
+      setMessage(action === "check-out" ? "Check out successful." : "Check in successful.");
+      await loadAttendanceLog(cleanedPayload, true);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not mark attendance."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadAttendanceLog = async (nextQrPayload = qrPayload, silent = false) => {
+    const cleanedPayload = cleanQrPayload(nextQrPayload);
+    if (!cleanedPayload) {
+      if (!silent) setError("Scan staff QR first to view attendance log.");
+      return;
+    }
+    if (!silent) {
+      setError("");
+      setMessage("");
+      setLoading(true);
+    }
+    try {
+      const data = unwrap(await api.post("/attendance-kiosk/log", { qrPayload: cleanedPayload }));
+      setAttendanceLog(data.records || []);
+      setQrPayload(cleanedPayload);
+      setStatus((current) => current?.staff ? current : { staff: data.staff, record: data.records?.[0], status: data.records?.[0]?.checkInTime && !data.records?.[0]?.checkOutTime ? "checked-in" : data.records?.[0]?.checkOutTime ? "checked-out" : "not-marked" });
+    } catch (err) {
+      if (!silent) setError(apiErrorMessage(err, "Could not load attendance log."));
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!scanOpen) return undefined;
+    const scanner = new Html5QrcodeScanner(scannerId.current, { fps: 10, qrbox: { width: 240, height: 240 } }, false);
+    scanner.render(
+      async (decodedText) => {
+        await scanner.clear();
+        setScanOpen(false);
+        await loadStatus(decodedText, { select: true });
+      },
+      () => {}
+    );
+    return () => {
+      scanner.clear().catch(() => {});
+    };
+  }, [scanOpen]);
+
+  return (
+    <main className="staff-kiosk-page">
+      <section className="staff-kiosk-shell">
+        <header className="staff-kiosk-topbar">
+          <div className="staff-kiosk-title">
+            <QrCode />
+            <h1>Attendance System</h1>
+          </div>
+          <div className="staff-kiosk-clock">
+            <CalendarDays size={22} />
+            <span>{kioskDate} - {kioskTime}</span>
+          </div>
+          <button className="staff-kiosk-menu" type="button" aria-label="Kiosk menu"><MenuIcon size={22} /></button>
+        </header>
+
+        <nav className="staff-kiosk-tabs" aria-label="Attendance views">
+          <button className={activeTab === "scan" ? "active" : ""} type="button" onClick={() => setActiveTab("scan")}><ScanQrCode size={22} /> Scan QR</button>
+          <button className={activeTab === "log" ? "active" : ""} type="button" onClick={() => { setActiveTab("log"); loadAttendanceLog(); }}><ClipboardList size={22} /> Attendance Log</button>
+          <button className={activeTab === "staff" ? "active" : ""} type="button" onClick={() => setActiveTab("staff")}><Users size={22} /> Staff</button>
+        </nav>
+
+        {activeTab === "scan" && <div className="staff-kiosk-grid">
+          <section className="chart-card staff-kiosk-card staff-kiosk-scan-card">
+            <div className="staff-kiosk-scan-visual">
+              <div className={`staff-kiosk-scan-icon ${scanOpen ? "is-scanning" : ""}`}>
+                <ScanQrCode size={142} />
+                <i />
+              </div>
+              <p>Scan staff member QR code to check in or check out</p>
+            </div>
+
+            <div className="staff-kiosk-actions">
+              <Button type="button" onClick={() => setScanOpen((current) => !current)}><QrCode size={16} /> {scanOpen ? "Close scanner" : "Scan QR"}</Button>
+              <Button type="button" variant="ghost" onClick={() => loadStatus()} disabled={loading || !qrPayload}><Eye size={16} /> Today status</Button>
+            </div>
+            {qrPayload && (
+              <div className="staff-kiosk-qr-loaded">
+                <QRCodeSVG value={qrPayload} size={84} />
+                <div>
+                  <strong>{status?.staff?.name || "QR loaded"}</strong>
+                  <span>{status?.staff?.role || "Staff selected"}</span>
+                  <button type="button" onClick={() => { setQrPayload(""); setStatus(null); setMessage(""); }}>Clear QR</button>
+                </div>
+              </div>
+            )}
+            {!scanOpen && !qrPayload && (
+              <div className="staff-kiosk-scan-empty">
+                <ScanQrCode size={56} />
+                <strong>Ready to scan</strong>
+                <p>Scan the staff member's unique QR card, then choose Check In or Check Out.</p>
+              </div>
+            )}
+            {scanOpen && <div id={scannerId.current} className="staff-qr-reader staff-kiosk-reader" />}
+          </section>
+
+          <section className="chart-card staff-kiosk-card staff-kiosk-status-card">
+            <div className="staff-kiosk-card-title">
+              <Clock size={20} />
+              <h2>Selected staff</h2>
+            </div>
+            {message && <p className="success">{message}</p>}
+            {error && <p className="error">{error}</p>}
+            <div className="staff-kiosk-person">
+              <div>{status?.staff?.name?.slice(0, 2)?.toUpperCase() || "DF"}</div>
+              <span>
+                <strong>{status?.staff?.name || "Staff member"}</strong>
+                <small>{status?.staff?.role || "Scan staff QR first"}</small>
+              </span>
+            </div>
+            <div className="staff-attendance-summary">
+              <span><small>Status</small><strong>{checkedIn ? "Checked in" : activeRecord?.checkOutTime ? "Checked out" : "Not marked"}</strong></span>
+              <span><small>Check in</small><strong>{formatTime(activeRecord?.checkInTime)}</strong></span>
+              <span><small>Check out</small><strong>{formatTime(activeRecord?.checkOutTime)}</strong></span>
+              <span><small>Hours</small><strong>{activeRecord?.workingHours || activeRecord?.workedHours || 0}h</strong></span>
+            </div>
+            <div className="staff-kiosk-mark-actions">
+              <Button className="staff-kiosk-checkin" onClick={() => markAttendance("check-in")} disabled={loading || !hasScannedStaff || checkedIn}>
+                <LogIn size={18} /> Check In
+              </Button>
+              <Button className="staff-kiosk-checkout" variant="ghost" onClick={() => markAttendance("check-out")} disabled={loading || !hasScannedStaff || !checkedIn}>
+                <LogOut size={18} /> Check Out
+              </Button>
+            </div>
+          </section>
+        </div>}
+
+        {activeTab === "log" && (
+          <section className="chart-card staff-kiosk-log-panel">
+            <div className="staff-kiosk-card-title">
+              <ClipboardList size={22} />
+              <h2>Attendance Log</h2>
+            </div>
+            {message && <p className="success">{message}</p>}
+            {error && <p className="error">{error}</p>}
+            <div className="staff-kiosk-log-head">
+              <div className="staff-kiosk-person">
+                <div>{status?.staff?.name?.slice(0, 2)?.toUpperCase() || "DF"}</div>
+                <span>
+                  <strong>{status?.staff?.name || "Scan staff QR first"}</strong>
+                  <small>{status?.staff?.role || "Attendance log"}</small>
+                </span>
+              </div>
+              <Button type="button" onClick={() => loadAttendanceLog()} disabled={loading || !qrPayload}><ClipboardList size={16} /> Refresh log</Button>
+            </div>
+            {attendanceLog.length ? (
+              <div className="staff-kiosk-log-list">
+                {attendanceLog.map((record) => (
+                  <article key={record._id}>
+                    <div>
+                      <strong>{new Date(record.date).toLocaleDateString()}</strong>
+                      <span>{formatTime(record.checkInTime)} - {formatTime(record.checkOutTime)}</span>
+                    </div>
+                    <div>
+                      <strong>{record.workingHours || record.workedHours || 0}h</strong>
+                      <span>OT {record.overtimeHours || 0}h</span>
+                    </div>
+                    <StatusBadge status={record.status} />
+                    <StatusBadge status={record.method || "qr"} />
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="staff-kiosk-scan-empty">
+                <ClipboardList size={56} />
+                <strong>No log selected</strong>
+                <p>Scan a staff QR first, then open Attendance Log to view recent records.</p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "staff" && (
+          <section className="chart-card staff-kiosk-log-panel">
+            <div className="staff-kiosk-card-title">
+              <Users size={22} />
+              <h2>Staff</h2>
+            </div>
+            <div className="staff-kiosk-person">
+              <div>{status?.staff?.name?.slice(0, 2)?.toUpperCase() || "DF"}</div>
+              <span>
+                <strong>{status?.staff?.name || "No staff selected"}</strong>
+                <small>{status?.staff?.role || "Scan QR to select staff"}</small>
+              </span>
+            </div>
+          </section>
+        )}
+      </section>
+    </main>
+  );
+}
+
 function ManualOrder() {
   return <MenuPage />;
 }
 
 function KitchenDashboard() {
   const { data: orders, load } = useResource("/kitchen/orders");
+  const { socket } = useSocket();
+  const [updatingId, setUpdatingId] = useState("");
+  const [notifyingId, setNotifyingId] = useState("");
+  const [message, setMessage] = useState("");
   const advance = async (order) => {
-    const next = { pending: "accepted", accepted: "preparing", preparing: "ready", ready: "served" }[order.status] || order.status;
-    await api.patch(`/kitchen/orders/${order._id}/status`, { status: next });
-    load();
+    const next = { pending: "accepted", accepted: "preparing", preparing: "ready" }[order.status] || order.status;
+    if (next === order.status) return;
+    setMessage("");
+    setUpdatingId(order._id);
+    try {
+      await api.patch(`/kitchen/orders/${order._id}/status`, { status: next });
+      load();
+    } finally {
+      setUpdatingId("");
+    }
   };
+  const notifyWaiter = async (order) => {
+    setMessage("");
+    setNotifyingId(order._id);
+    try {
+      await api.patch(`/kitchen/orders/${order._id}/status`, { status: "ready" });
+      setMessage(`${order.orderNumber} notification sent to waiter.`);
+      load();
+    } finally {
+      setNotifyingId("");
+    }
+  };
+  const lanes = [
+    { key: "pending", title: "New orders", action: "Accept order", icon: Bell, empty: "Customer orders will land here." },
+    { key: "accepted", title: "Accepted", action: "Start cooking", icon: ClipboardList, empty: "Accepted orders wait here." },
+    { key: "preparing", title: "Preparing", action: "Mark ready", icon: ChefHat, empty: "Cooking orders appear here." },
+    { key: "ready", title: "Ready", icon: CheckCircle2, empty: "Ready orders wait for waiter service." },
+  ];
+  const activeOrders = orders.filter((order) => !["served", "completed", "cancelled"].includes(order.status));
+  const waitingCount = orders.filter((order) => order.status === "pending").length;
+  const preparingCount = orders.filter((order) => order.status === "accepted" || order.status === "preparing").length;
+  const readyCount = orders.filter((order) => order.status === "ready").length;
+  useEffect(() => {
+    if (!socket) return undefined;
+    socket.emit("join-role", "kitchen");
+    socket.on("order:new", load);
+    socket.on("order:update", load);
+    return () => {
+      socket.off("order:new", load);
+      socket.off("order:update", load);
+    };
+  }, [socket]);
   return (
     <StaffLayout role="kitchen">
-      <Header title="Kitchen order board" />
-      <div className="kitchen-board">{["pending", "accepted", "preparing", "ready"].map((status) => <section key={status}><h2>{status}</h2>{orders.filter((order) => order.status === status).map((order) => <article className="kitchen-card" key={order._id}><h3>{order.orderNumber}</h3><p>Table {order.tableNumber}</p><ul>{order.items?.map((item) => <li key={item._id}>{item.quantity} x {item.name}<small>{item.specialInstructions}</small></li>)}</ul><Button onClick={() => advance(order)}>Advance</Button></article>)}</section>)}</div>
+      <Header
+        title="Kitchen order board"
+        actions={<Link className="btn btn-soft" to="/kitchen/attendance"><QrCode size={16} /> My QR</Link>}
+      />
+      <section className="kitchen-hero">
+        <div>
+          <span className="eyebrow">Live kitchen flow</span>
+          <h2>Customer order status control</h2>
+          <p>Accept new customer orders, move them into cooking, and mark them ready for the waiter to serve.</p>
+        </div>
+        <div className="kitchen-hero-stats">
+          <span><small>Active</small><strong>{activeOrders.length}</strong></span>
+          <span><small>Waiting</small><strong>{waitingCount}</strong></span>
+          <span><small>Cooking</small><strong>{preparingCount}</strong></span>
+          <span><small>Ready</small><strong>{readyCount}</strong></span>
+        </div>
+      </section>
+      {message && <p className="success">{message}</p>}
+      <div className="kitchen-board kitchen-order-board">
+        {lanes.map(({ key, title, action, icon: LaneIcon, empty }) => {
+          const laneOrders = orders.filter((order) => order.status === key);
+          return (
+            <section key={key}>
+              <h2><span><LaneIcon size={18} /> {title}</span><b>{laneOrders.length}</b></h2>
+              {laneOrders.length ? (
+                laneOrders.map((order) => (
+                  <article className="kitchen-card kitchen-order-card" key={order._id}>
+                    <div className="kitchen-order-card-head">
+                      <div>
+                        <h3>{order.orderNumber}</h3>
+                        <p>Table {order.tableNumber} - {order.customerName}</p>
+                      </div>
+                      <StatusBadge status={order.status} />
+                    </div>
+                    <ul>
+                      {order.items?.map((item) => (
+                        <li key={item._id || `${order._id}-${item.name}`}>
+                          <span>{item.quantity} x {item.name}</span>
+                          {item.specialInstructions && <small>{item.specialInstructions}</small>}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="kitchen-order-card-foot">
+                      <strong>{money(order.totalAmount)}</strong>
+                      {key === "ready" ? (
+                        <Button className="kitchen-ready-note-button" variant="soft" onClick={() => notifyWaiter(order)} disabled={notifyingId === order._id}>
+                          <CheckCircle2 size={16} /> Notify waiter
+                        </Button>
+                      ) : (
+                        <Button onClick={() => advance(order)} disabled={updatingId === order._id}>{action}</Button>
+                      )}
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <div className="kitchen-empty-column">
+                  <LaneIcon size={48} />
+                  <strong>No {title.toLowerCase()}</strong>
+                  <p>{empty}</p>
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </StaffLayout>
+  );
+}
+
+function KitchenAttendancePage() {
+  const { data: records } = useResource("/staff/attendance/me");
+  const columns = [
+    { key: "date", label: "Date", render: (row) => new Date(row.date).toLocaleDateString() },
+    { key: "checkInTime", label: "Check in", render: (row) => row.checkInTime ? new Date(row.checkInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-" },
+    { key: "checkOutTime", label: "Check out", render: (row) => row.checkOutTime ? new Date(row.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-" },
+    { key: "workingHours", label: "Hours", render: (row) => `${row.workingHours || row.workedHours || 0}h` },
+    { key: "overtimeHours", label: "Overtime", render: (row) => `${row.overtimeHours || 0}h` },
+    { key: "method", label: "Method", render: (row) => <StatusBadge status={row.method || "qr"} /> },
+    { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+  ];
+
+  return (
+    <StaffLayout role="kitchen">
+      <Header title="Chef attendance QR" />
+      <StaffQrDownloadCard
+        title="Chef attendance QR"
+        description="Download this QR and scan it at the Staff Attendance Kiosk to check in, check out, and view attendance logs."
+      />
+      <section className="chart-card waiter-attendance-records">
+        <div className="reservation-section-title">
+          <CalendarDays size={18} />
+          <h2>My attendance records</h2>
+        </div>
+        {records.length ? (
+          <DataTable columns={columns} rows={records} />
+        ) : (
+          <EmptyState icon={Clock} title="No attendance records" text="Scan your QR at the kiosk to create attendance records." />
+        )}
+      </section>
     </StaffLayout>
   );
 }
@@ -2184,21 +3101,156 @@ function InventoryPage() {
 }
 
 function AdminDashboard() {
-  const { data: analytics } = useResource("/admin/analytics", {});
-  const sales = analytics.salesByDay || analytics.salesTrend || [{ name: "Today", sales: analytics.totalSales || 0 }];
-  const popular = analytics.popularItems || [];
+  const { data: analyticsResponse } = useResource("/admin/analytics", {});
+  const { data: users } = useResource("/admin/users");
+  const { data: inventory } = useResource("/admin/inventory");
+  const { data: reservations } = useResource("/admin/reservations");
+  const { data: payroll } = useResource("/admin/payroll");
+  const { data: attendance } = useResource("/admin/attendance");
+  const analytics = analyticsResponse.analytics || analyticsResponse || {};
+  const sales = (analytics.chartData || analytics.salesByDay || analytics.salesTrend || [{ label: "Today", revenue: analytics.totalSales || analytics.revenue || 0, orders: analytics.todayOrders || 0 }])
+    .map((row) => ({ ...row, label: row.label || row.name || row.date || "Today" }));
+  const popular = analytics.topSellingFoods || analytics.popularItems || [];
+  const recentOrders = analytics.recentOrders || [];
+  const lowStock = inventory.filter((item) => Number(item.quantity) <= Number(item.lowStockLimit));
+  const pendingReservations = reservations.filter((reservation) => reservation.status === "pending");
+  const pendingPayroll = payroll.filter((row) => row.status === "pending").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const today = new Date().toDateString();
+  const todayAttendance = attendance.filter((record) => new Date(record.date).toDateString() === today);
+  const checkedIn = todayAttendance.filter((record) => record.checkInTime && !record.checkOutTime).length;
+  const staffCount = users.filter((user) => ["waiter", "chef", "staff", "kitchen"].includes(user.role)).length;
+
   return (
     <StaffLayout role="admin">
-      <Header title="Admin dashboard" />
-      <div className="stats-grid">
-        <StatCard icon={WalletCards} label="Total sales" value={money(analytics.totalSales)} />
-        <StatCard icon={ClipboardList} label="Today orders" value={analytics.todayOrders || 0} />
-        <StatCard icon={Bell} label="Pending" value={analytics.pendingOrders || 0} />
-        <StatCard icon={ChefHat} label="Completed" value={analytics.completedOrders || 0} />
+      <Header
+        title="Admin dashboard"
+        actions={<Link className="btn btn-primary" to="/admin/reports"><BarChart3 size={16} /> View reports</Link>}
+      />
+
+      <section className="admin-dashboard-hero">
+        <div>
+          <span className="eyebrow">Live overview</span>
+          <h2>Restaurant control center</h2>
+          <p>Track sales, staff, inventory, reservations, payroll, and live operations from one calm dashboard.</p>
+        </div>
+        <div className="admin-dashboard-hero-actions">
+          <Link className="btn btn-soft" to="/admin/menu"><Utensils size={16} /> Menu</Link>
+          <Link className="btn btn-soft" to="/admin/inventory"><PackageCheck size={16} /> Inventory</Link>
+          <Link className="btn btn-soft" to="/admin/attendance"><CalendarDays size={16} /> Attendance</Link>
+        </div>
+      </section>
+
+      <div className="stats-grid admin-dashboard-stats">
+        <StatCard icon={WalletCards} label="Total sales" value={money(analytics.revenue || analytics.totalSales || 0)} />
+        <StatCard icon={ClipboardList} label="Orders" value={analytics.totalOrders || analytics.todayOrders || recentOrders.length} />
+        <StatCard icon={Users} label="Staff" value={staffCount} />
+        <StatCard icon={Bell} label="Alerts" value={lowStock.length + pendingReservations.length} />
       </div>
-      <div className="chart-grid">
-        <div className="chart-card"><h2>Sales</h2><ResponsiveContainer height={260}><BarChart data={sales}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><Tooltip /><Bar dataKey="sales" fill="#8b6f47" /></BarChart></ResponsiveContainer></div>
-        <div className="chart-card"><h2>Popular items</h2><ResponsiveContainer height={260}><PieChart><Pie data={popular} dataKey="orderCount" nameKey="name" outerRadius={95}>{popular.map((_, i) => <Cell key={i} fill={["#5d4524", "#8b6f47", "#c1b495", "#6f6341"][i % 4]} />)}</Pie><Tooltip /></PieChart></ResponsiveContainer></div>
+
+      <div className="admin-dashboard-grid">
+        <section className="chart-card admin-dashboard-card admin-dashboard-card-wide">
+          <div className="admin-dashboard-card-head">
+            <div>
+              <span className="eyebrow">Sales</span>
+              <h2>Revenue trend</h2>
+            </div>
+            <TrendingUp />
+          </div>
+          <ResponsiveContainer height={260}>
+            <BarChart data={sales}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(111,99,65,0.18)" />
+              <XAxis dataKey="label" />
+              <YAxis />
+              <Tooltip formatter={(value, name) => [name === "revenue" || name === "sales" ? money(value) : value, name]} />
+              <Bar dataKey="revenue" fill="#08784f" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="orders" fill="#c1b495" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </section>
+
+        <section className="chart-card admin-dashboard-card">
+          <div className="admin-dashboard-card-head">
+            <div>
+              <span className="eyebrow">Kitchen</span>
+              <h2>Popular items</h2>
+            </div>
+            <ChefHat />
+          </div>
+          {popular.length ? (
+            <div className="admin-dashboard-list">
+              {popular.slice(0, 5).map((item) => (
+                <article key={item._id || item.name}>
+                  <div><strong>{item.name}</strong><span>{item.quantitySold || item.orderCount || 0} sold</span></div>
+                  <b>{money(item.revenue || 0)}</b>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={ChefHat} title="No popular items" text="Top sellers will appear after orders." />
+          )}
+        </section>
+
+        <section className="chart-card admin-dashboard-card">
+          <div className="admin-dashboard-card-head">
+            <div>
+              <span className="eyebrow">Operations</span>
+              <h2>Attention needed</h2>
+            </div>
+            <Bell />
+          </div>
+          <div className="admin-dashboard-alerts">
+            <Link to="/admin/inventory"><PackageCheck /> <span>{lowStock.length} low-stock items</span></Link>
+            <Link to="/admin/reservations"><CalendarDays /> <span>{pendingReservations.length} pending reservations</span></Link>
+            <Link to="/admin/payroll"><WalletCards /> <span>{money(pendingPayroll)} pending payroll</span></Link>
+            <Link to="/admin/attendance"><Clock /> <span>{checkedIn} staff currently checked in</span></Link>
+          </div>
+        </section>
+
+        <section className="chart-card admin-dashboard-card">
+          <div className="admin-dashboard-card-head">
+            <div>
+              <span className="eyebrow">Inventory</span>
+              <h2>Low stock</h2>
+            </div>
+            <PackageCheck />
+          </div>
+          {lowStock.length ? (
+            <div className="admin-dashboard-list">
+              {lowStock.slice(0, 6).map((item) => (
+                <article key={item._id}>
+                  <div><strong>{item.itemName}</strong><span>{item.quantity} {item.unit} left</span></div>
+                  <StatusBadge status={Number(item.quantity) <= 0 ? "out-of-stock" : "low"} />
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={PackageCheck} title="Stock looks good" text="Low-stock items will appear here." />
+          )}
+        </section>
+
+        <section className="chart-card admin-dashboard-card admin-dashboard-card-wide">
+          <div className="admin-dashboard-card-head">
+            <div>
+              <span className="eyebrow">Activity</span>
+              <h2>Recent orders</h2>
+            </div>
+            <ReceiptText />
+          </div>
+          {recentOrders.length ? (
+            <DataTable
+              columns={[
+                { key: "orderNumber", label: "Order" },
+                { key: "customerName", label: "Customer", render: (row) => row.customerName || row.customer?.name || "Guest" },
+                { key: "tableNumber", label: "Table" },
+                { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                { key: "totalAmount", label: "Total", render: (row) => money(row.totalAmount) },
+              ]}
+              rows={recentOrders.slice(0, 6)}
+            />
+          ) : (
+            <EmptyState icon={ReceiptText} title="No recent orders" text="Recent orders will appear here." />
+          )}
+        </section>
       </div>
     </StaffLayout>
   );
@@ -2221,12 +3273,14 @@ function AdminResource({ title, path, columns }) {
 
 function AdminUsersPage() {
   const { data: users, load } = useResource("/admin/users");
-  const emptyForm = { name: "", email: "", password: "", phone: "", role: "waiter" };
+  const emptyForm = { name: "", email: "", password: "", phone: "", whatsappNumber: "", role: "waiter", salaryType: "monthly", monthlySalary: "", dailyRate: "", hourlyRate: "", overtimeRate: "" };
   const [open, setOpen] = useState(false);
+  const [qrUser, setQrUser] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const adminQrRef = useRef(null);
 
   const openCreateForm = () => {
     setForm(emptyForm);
@@ -2246,10 +3300,45 @@ function AdminUsersPage() {
       setForm(emptyForm);
       await load();
     } catch (err) {
-      setError(apiErrorMessage(err, "Could not add staff user."));
+      setError(err.response?.status === 409 ? "This email is already registered. Use a different email for the staff member." : apiErrorMessage(err, "Could not add staff user."));
     } finally {
       setSaving(false);
     }
+  };
+
+  const downloadAdminStaffQr = () => {
+    if (!adminQrRef.current || !qrUser?.attendanceQrPayload) return;
+    const svgText = new XMLSerializer().serializeToString(adminQrRef.current);
+    const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 760;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff8e1";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "#073828";
+      context.font = "700 34px Arial";
+      context.fillText("DineFlow Attendance QR", 52, 70);
+      context.fillStyle = "#1f1b12";
+      context.font = "600 22px Arial";
+      context.fillText(qrUser.name || "Staff member", 52, 112);
+      context.fillStyle = "#8b6f47";
+      context.font = "700 18px Arial";
+      context.fillText(`${qrUser.role || "staff"} unique QR code`, 52, 144);
+      context.drawImage(image, 120, 190, 400, 400);
+      context.fillStyle = "#5f5546";
+      context.font = "600 16px Arial";
+      context.fillText("Scan this QR at the Staff Attendance Kiosk.", 52, 670);
+      URL.revokeObjectURL(url);
+      const link = document.createElement("a");
+      link.download = `dineflow-attendance-qr-${qrUser.name || "staff"}.png`.replace(/\s+/g, "-").toLowerCase();
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    };
+    image.src = url;
   };
 
   return (
@@ -2259,10 +3348,29 @@ function AdminUsersPage() {
         columns={[
           { key: "name", label: "Name" },
           { key: "email", label: "Email" },
+          { key: "whatsappNumber", label: "WhatsApp", render: (row) => row.whatsappNumber || row.phone || "-" },
           { key: "role", label: "Role", render: (row) => <StatusBadge status={row.role} /> },
+          { key: "salaryType", label: "Salary type", render: (row) => <StatusBadge status={row.salaryType || "monthly"} /> },
+          { key: "monthlySalary", label: "Monthly", render: (row) => money(row.monthlySalary) },
+          { key: "dailyRate", label: "Daily", render: (row) => money(row.dailyRate) },
+          { key: "hourlyRate", label: "Hourly", render: (row) => money(row.hourlyRate) },
+          { key: "overtimeRate", label: "OT rate", render: (row) => money(row.overtimeRate) },
+          { key: "qr", label: "QR", render: (row) => row.attendanceQrPayload ? <Button variant="ghost" onClick={() => setQrUser(row)}><QrCode size={16} /> QR</Button> : "-" },
         ]}
         rows={users}
       />
+      <Modal open={Boolean(qrUser)} title="Staff attendance QR" onClose={() => setQrUser(null)}>
+        <div className="admin-staff-qr-modal">
+          <div className="waiter-qr-frame">
+            {qrUser?.attendanceQrPayload ? <QRCodeSVG ref={adminQrRef} value={qrUser.attendanceQrPayload} size={180} /> : <QrCode size={64} />}
+          </div>
+          <div>
+            <h3>{qrUser?.name}</h3>
+            <p className="muted">{qrUser?.role} attendance QR. Scan this at the Staff Attendance Kiosk to mark attendance.</p>
+            <Button onClick={downloadAdminStaffQr} disabled={!qrUser?.attendanceQrPayload}><QrCode size={16} /> Download QR</Button>
+          </div>
+        </div>
+      </Modal>
       <Modal open={open} title="Add staff user" onClose={() => setOpen(false)}>
         <form className="admin-user-form" onSubmit={submit}>
           <label>
@@ -2282,12 +3390,39 @@ function AdminUsersPage() {
             <Input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="077 123 4567" />
           </label>
           <label>
+            <span>WhatsApp number</span>
+            <Input value={form.whatsappNumber} onChange={(event) => setForm({ ...form, whatsappNumber: event.target.value })} placeholder="94771234567" />
+          </label>
+          <label>
             <span>Role</span>
             <select className="input" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
               <option value="waiter">Waiter</option>
               <option value="chef">Chef</option>
               <option value="staff">Staff</option>
             </select>
+          </label>
+          <label>
+            <span>Salary type</span>
+            <select className="input" value={form.salaryType} onChange={(event) => setForm({ ...form, salaryType: event.target.value })}>
+              <option value="monthly">Monthly staff</option>
+              <option value="hourly">Hourly staff</option>
+            </select>
+          </label>
+          <label>
+            <span>Monthly salary</span>
+            <Input type="number" min="0" step="0.01" value={form.monthlySalary} onChange={(event) => setForm({ ...form, monthlySalary: event.target.value })} placeholder="75000" />
+          </label>
+          <label>
+            <span>Daily rate</span>
+            <Input type="number" min="0" step="0.01" value={form.dailyRate} onChange={(event) => setForm({ ...form, dailyRate: event.target.value })} placeholder="2000" />
+          </label>
+          <label>
+            <span>Hourly rate</span>
+            <Input type="number" min="0" step="0.01" value={form.hourlyRate} onChange={(event) => setForm({ ...form, hourlyRate: event.target.value })} placeholder="850" />
+          </label>
+          <label>
+            <span>Overtime rate</span>
+            <Input type="number" min="0" step="0.01" value={form.overtimeRate} onChange={(event) => setForm({ ...form, overtimeRate: event.target.value })} placeholder="300" />
           </label>
           {error && <p className="error">{error}</p>}
           {success && <p className="success">{success}</p>}
@@ -2297,6 +3432,423 @@ function AdminUsersPage() {
           </div>
         </form>
       </Modal>
+    </StaffLayout>
+  );
+}
+
+function AdminPayrollPage() {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const { data: users } = useResource("/admin/users");
+  const { data: payroll, load } = useResource("/admin/payroll");
+  const { data: attendanceRecords, load: loadAttendance } = useResource("/admin/attendance");
+  const staffUsers = users.filter((user) => ["waiter", "chef", "staff", "kitchen"].includes(user.role));
+  const emptyForm = { staffId: "", month: currentMonth, baseSalary: "", allowances: "0", deductions: "0", notes: "" };
+  const emptyAttendanceForm = { staffId: "", date: new Date().toISOString().slice(0, 10), status: "present", startTime: "09:00", endTime: "17:00", breakHours: "1", shortLeaveHours: "0", notes: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [attendanceForm, setAttendanceForm] = useState(emptyAttendanceForm);
+  const [editingPayrollId, setEditingPayrollId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [generatingPayroll, setGeneratingPayroll] = useState(false);
+  const [payrollSearch, setPayrollSearch] = useState("");
+  const [payrollStatusFilter, setPayrollStatusFilter] = useState("all");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const selectedAttendance = attendanceRecords.filter((record) => (!form.staffId || String(record.staffId) === form.staffId) && record.month === form.month);
+  const absentDays = selectedAttendance.filter((record) => record.status === "absent").length;
+  const shortLeaveHours = selectedAttendance.reduce((sum, record) => sum + Number(record.shortLeaveHours || 0), 0);
+  const workedHours = selectedAttendance.reduce((sum, record) => sum + Number(record.workedHours || 0), 0);
+  const monthParts = form.month.split("-").map(Number);
+  const daysInMonth = form.month ? new Date(monthParts[0], monthParts[1], 0).getDate() : 30;
+  const dailyRate = Number(form.baseSalary || 0) / Math.max(1, daysInMonth);
+  const hourlyRate = dailyRate / 8;
+  const attendanceDeductions = Math.round((absentDays * dailyRate + shortLeaveHours * hourlyRate) * 100) / 100;
+  const totalPayroll = payroll.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const paidPayroll = payroll.filter((row) => row.status === "paid").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const pendingPayroll = payroll.filter((row) => row.status === "pending").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const totalDeductions = Number(form.deductions || 0) + attendanceDeductions;
+  const projectedTotal = Math.max(0, Number(form.baseSalary || 0) + Number(form.allowances || 0) - totalDeductions);
+  const visiblePayroll = payroll.filter((row) => {
+    const matchesSearch = `${row.staffName} ${row.staffRole} ${row.month}`.toLowerCase().includes(payrollSearch.toLowerCase());
+    const matchesStatus = payrollStatusFilter === "all" || row.status === payrollStatusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const resetForm = () => {
+    setForm(emptyForm);
+    setAttendanceForm(emptyAttendanceForm);
+    setEditingPayrollId(null);
+    setError("");
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+    const payload = {
+      ...form,
+      baseSalary: Number(form.baseSalary || 0),
+      allowances: Number(form.allowances || 0),
+      deductions: totalDeductions,
+      notes: [form.notes, attendanceDeductions ? `Attendance deductions: ${money(attendanceDeductions)} (${absentDays} absent, ${shortLeaveHours} short-leave hours).` : ""].filter(Boolean).join("\n"),
+    };
+
+    try {
+      if (editingPayrollId) {
+        await api.patch(`/admin/payroll/${editingPayrollId}`, payload);
+        setMessage("Payroll record updated.");
+      } else {
+        await api.post("/admin/payroll", payload);
+        setMessage("Payroll record created.");
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not save payroll record."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const editPayroll = (row) => {
+    setEditingPayrollId(row._id);
+    setMessage("");
+    setError("");
+    setForm({
+      staffId: row.staffId,
+      month: row.month,
+      baseSalary: row.baseSalary ?? "",
+      allowances: row.allowances ?? "0",
+      deductions: row.deductions ?? "0",
+      notes: row.notes || "",
+    });
+  };
+
+  const saveAttendance = async (event) => {
+    event.preventDefault();
+    setSavingAttendance(true);
+    setError("");
+    setMessage("");
+    try {
+      await api.post("/admin/attendance", attendanceForm);
+      setMessage("Attendance saved and salary calculation updated.");
+      setAttendanceForm({ ...emptyAttendanceForm, staffId: attendanceForm.staffId, date: attendanceForm.date });
+      await loadAttendance();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not save attendance."));
+    } finally {
+      setSavingAttendance(false);
+    }
+  };
+
+  const deleteAttendance = async (record) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.delete(`/admin/attendance/${record._id}`);
+      setMessage("Attendance record deleted.");
+      await loadAttendance();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not delete attendance."));
+    }
+  };
+
+  const markPaid = async (row) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.patch(`/admin/payroll/${row._id}/paid`);
+      setMessage(`${row.staffName} salary marked as paid.`);
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not mark salary as paid."));
+    }
+  };
+
+  const deletePayroll = async (row) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.delete(`/admin/payroll/${row._id}`);
+      setMessage(`${row.staffName} payroll record deleted.`);
+      if (editingPayrollId === row._id) resetForm();
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not delete payroll record."));
+    }
+  };
+
+  const generatePayroll = async () => {
+    setGeneratingPayroll(true);
+    setError("");
+    setMessage("");
+    try {
+      await api.post("/admin/payroll/generate", { month: form.month, staffId: form.staffId || undefined });
+      setMessage("Payroll generated from attendance records.");
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not generate payroll."));
+    } finally {
+      setGeneratingPayroll(false);
+    }
+  };
+
+  const downloadPayslip = async (row) => {
+    try {
+      const response = await api.get(`/admin/payroll/${row._id}/payslip`, { responseType: "blob" });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `payslip-${row.staffName}-${row.month}.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not download payslip."));
+    }
+  };
+
+  return (
+    <StaffLayout role="admin">
+      <Header title="Staff payroll" actions={<Button onClick={generatePayroll} disabled={generatingPayroll}><WalletCards size={16} /> {generatingPayroll ? "Generating..." : "Generate payroll"}</Button>} />
+      {message && <p className="success">{message}</p>}
+      {error && <p className="error">{error}</p>}
+
+      <section className="stats-grid admin-payroll-stats">
+        <StatCard icon={WalletCards} label="Total payroll" value={money(totalPayroll)} />
+        <StatCard icon={CheckCircle2} label="Paid" value={money(paidPayroll)} />
+        <StatCard icon={Clock} label="Pending" value={money(pendingPayroll)} />
+      </section>
+
+      <div className="admin-payroll-layout">
+        <section className="chart-card admin-payroll-form-card">
+          <div className="reservation-section-title">
+            <WalletCards size={18} />
+            <h2>{editingPayrollId ? "Edit salary payment" : "Add salary payment"}</h2>
+          </div>
+          <form className="admin-payroll-form" onSubmit={submit}>
+            <label>
+              <span>Staff member</span>
+              <select
+                className="input"
+                value={form.staffId}
+                onChange={(event) => {
+                  setForm({ ...form, staffId: event.target.value });
+                  setAttendanceForm({ ...attendanceForm, staffId: event.target.value });
+                }}
+                required
+              >
+                <option value="">Select staff</option>
+                {staffUsers.map((staff) => <option value={staff.id || staff._id} key={staff.id || staff._id}>{staff.name} - {staff.role}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Month</span>
+              <Input type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} required />
+            </label>
+            <div className="admin-payroll-form-grid">
+              <label>
+                <span>Base salary</span>
+                <Input type="number" min="0" step="0.01" value={form.baseSalary} onChange={(event) => setForm({ ...form, baseSalary: event.target.value })} placeholder="75000" required />
+              </label>
+              <label>
+                <span>Allowances</span>
+                <Input type="number" min="0" step="0.01" value={form.allowances} onChange={(event) => setForm({ ...form, allowances: event.target.value })} />
+              </label>
+              <label>
+                <span>Deductions</span>
+                <Input type="number" min="0" step="0.01" value={form.deductions} onChange={(event) => setForm({ ...form, deductions: event.target.value })} />
+              </label>
+              <div className="admin-payroll-total">
+                <span>Total salary</span>
+                <strong>{money(projectedTotal)}</strong>
+                <small>Attendance deduct {money(attendanceDeductions)}</small>
+              </div>
+            </div>
+            <div className="admin-attendance-summary">
+              <span><CalendarDays size={15} /> {absentDays} absent day{absentDays === 1 ? "" : "s"}</span>
+              <span><Clock size={15} /> {shortLeaveHours} short-leave hour{shortLeaveHours === 1 ? "" : "s"}</span>
+              <span><Clock size={15} /> {workedHours} worked hour{workedHours === 1 ? "" : "s"}</span>
+              <strong>{money(totalDeductions)} total deductions</strong>
+            </div>
+            <label>
+              <span>Notes</span>
+              <textarea className="input textarea" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Overtime, bonus, attendance note..." />
+            </label>
+            <div className="admin-payroll-actions">
+              {editingPayrollId && <Button type="button" variant="ghost" onClick={resetForm}>Cancel edit</Button>}
+              <Button disabled={saving}><Plus size={16} /> {saving ? "Saving..." : editingPayrollId ? "Update salary" : "Add salary"}</Button>
+            </div>
+          </form>
+        </section>
+
+        <section className="chart-card admin-payroll-attendance-card">
+          <div className="reservation-section-title">
+            <CalendarDays size={18} />
+            <h2>Attendance records</h2>
+          </div>
+          <div className="admin-attendance-list">
+            {selectedAttendance.slice(0, 6).map((record) => (
+              <article key={record._id}>
+                <div>
+                  <strong>{record.staffName}</strong>
+                  <span>{new Date(record.date).toLocaleDateString()} - {record.workedHours || 0}h worked - {record.shortLeaveHours ? `${record.shortLeaveHours}h short leave` : record.status}</span>
+                </div>
+                <StatusBadge status={record.status} />
+              </article>
+            ))}
+            {!selectedAttendance.length && <EmptyState icon={CalendarDays} title="No attendance records" text="Select staff and month to check kiosk attendance records." />}
+          </div>
+        </section>
+
+        <section className="chart-card admin-payroll-list-card">
+          <div className="reservation-section-title">
+            <ReceiptText size={18} />
+            <h2>Salary payments</h2>
+          </div>
+          <div className="admin-payroll-toolbar">
+            <Input placeholder="Search staff, role, month" value={payrollSearch} onChange={(event) => setPayrollSearch(event.target.value)} />
+            <select className="input" value={payrollStatusFilter} onChange={(event) => setPayrollStatusFilter(event.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="paid">Paid</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          {visiblePayroll.length ? (
+            <div className="admin-payroll-list">
+              {visiblePayroll.map((row) => (
+                <article className="admin-payroll-card" key={row._id}>
+                  <div>
+                    <h3>{row.staffName}</h3>
+                    <p>{row.staffRole} - {row.month}</p>
+                    <span>{row.presentDays || 0} days - {row.totalHours || 0}h - OT {row.overtimeHours || 0}h - Basic {money(row.basicSalary || row.baseSalary)}</span>
+                    {row.whatsappSentAt && <span>WhatsApp payslip sent {new Date(row.whatsappSentAt).toLocaleDateString()}</span>}
+                    {row.whatsappError && <span className="error">WhatsApp: {row.whatsappError}</span>}
+                  </div>
+                  <strong>{money(row.totalAmount)}</strong>
+                  <StatusBadge status={row.status} />
+                  <div className="admin-payroll-card-actions">
+                    <Button variant="ghost" onClick={() => editPayroll(row)}><Edit3 size={16} /> Edit</Button>
+                    {row.status !== "paid" && <Button variant="soft" onClick={() => markPaid(row)}><CheckCircle2 size={16} /> Mark paid</Button>}
+                    <Button variant="soft" onClick={() => downloadPayslip(row)}><ReceiptText size={16} /> Payslip</Button>
+                    <Button variant="ghost" onClick={() => deletePayroll(row)}><Trash2 size={16} /> Delete</Button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={WalletCards} title="No salary records" text="Add staff salary payments for waiters, chefs, helpers, and cleaning staff." />
+          )}
+        </section>
+      </div>
+    </StaffLayout>
+  );
+}
+
+function AdminAttendancePage() {
+  const { data: users } = useResource("/admin/users");
+  const { data: attendanceRecords, load } = useResource("/admin/attendance");
+  const staffUsers = users.filter((user) => ["waiter", "chef", "staff", "kitchen"].includes(user.role));
+  const emptyForm = { staffId: "", date: new Date().toISOString().slice(0, 10), status: "present", startTime: "09:00", endTime: "17:00", breakHours: "1", shortLeaveHours: "0", notes: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [attendanceSearch, setAttendanceSearch] = useState("");
+  const [rangeFilter, setRangeFilter] = useState("monthly");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const now = new Date();
+  const visibleAttendance = attendanceRecords.filter((record) => {
+    const recordDate = new Date(record.date);
+    const matchesSearch = `${record.staffName} ${record.staffRole} ${record.status}`.toLowerCase().includes(attendanceSearch.toLowerCase());
+    const matchesRange = rangeFilter === "daily"
+      ? recordDate.toDateString() === now.toDateString()
+      : rangeFilter === "weekly"
+        ? recordDate >= new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000)
+        : record.month === now.toISOString().slice(0, 7);
+    return matchesSearch && matchesRange;
+  });
+  const presentCount = visibleAttendance.filter((record) => record.status === "present").length;
+  const absentCount = visibleAttendance.filter((record) => record.status === "absent").length;
+  const shortLeaveCount = visibleAttendance.filter((record) => record.status === "short-leave").length;
+  const totalWorkedHours = visibleAttendance.reduce((sum, record) => sum + Number(record.workingHours || record.workedHours || 0), 0);
+
+  const saveAttendance = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      await api.post("/admin/attendance", form);
+      setMessage("Attendance saved.");
+      setForm({ ...emptyForm, staffId: form.staffId, date: form.date });
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not save attendance."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteAttendance = async (record) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.delete(`/admin/attendance/${record._id}`);
+      setMessage("Attendance record deleted.");
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not delete attendance."));
+    }
+  };
+
+  return (
+    <StaffLayout role="admin">
+      <Header title="Staff attendance" />
+      {message && <p className="success">{message}</p>}
+      {error && <p className="error">{error}</p>}
+
+      <section className="stats-grid admin-attendance-stats">
+        <StatCard icon={CheckCircle2} label="Present records" value={presentCount} />
+        <StatCard icon={Trash2} label="Absent records" value={absentCount} />
+        <StatCard icon={Clock} label="Short leave" value={shortLeaveCount} />
+        <StatCard icon={CalendarDays} label="Worked hours" value={totalWorkedHours} />
+      </section>
+
+      <div className="admin-attendance-view-layout">
+        <section className="chart-card admin-attendance-list-card">
+          <div className="reservation-section-title">
+            <ReceiptText size={18} />
+            <h2>Attendance records</h2>
+          </div>
+          <div className="admin-payroll-toolbar">
+            <Input placeholder="Search staff, role, status" value={attendanceSearch} onChange={(event) => setAttendanceSearch(event.target.value)} />
+            <select className="input" value={rangeFilter} onChange={(event) => setRangeFilter(event.target.value)}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          {visibleAttendance.length ? (
+            <DataTable
+              columns={[
+                { key: "staffName", label: "Staff" },
+                { key: "staffRole", label: "Role" },
+                { key: "date", label: "Date", render: (row) => new Date(row.date).toLocaleDateString() },
+                { key: "time", label: "Time", render: (row) => row.status === "absent" ? "-" : `${row.startTime || "-"} - ${row.endTime || "-"}` },
+                { key: "workedHours", label: "Worked", render: (row) => row.workingHours || row.workedHours || 0 },
+                { key: "overtimeHours", label: "OT" },
+                { key: "shortLeaveHours", label: "Short leave" },
+                { key: "method", label: "Method", render: (row) => <StatusBadge status={row.method || "manual"} /> },
+                { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+              ]}
+              rows={visibleAttendance}
+            />
+          ) : (
+            <EmptyState icon={CalendarDays} title="No attendance records" text="QR kiosk attendance records will appear here." />
+          )}
+        </section>
+      </div>
     </StaffLayout>
   );
 }
@@ -2513,6 +4065,252 @@ function AdminMenuPage() {
           )}
         </section>
       </div>
+    </StaffLayout>
+  );
+}
+
+function AdminInventoryPage() {
+  const { user } = useAuth();
+  const { data: inventory, load } = useResource("/admin/inventory");
+  const emptyForm = {
+    itemName: "",
+    quantity: "",
+    unit: "kg",
+    lowStockLimit: "",
+    dailyUsageEstimate: "",
+    restaurantId: user?.restaurantId || DEFAULT_RESTAURANT_ID,
+  };
+  const [form, setForm] = useState(emptyForm);
+  const [editingItemId, setEditingItemId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const lowStockItems = inventory
+    .filter((item) => Number(item.quantity) <= Number(item.lowStockLimit))
+    .sort((a, b) => Number(a.quantity) - Number(b.quantity));
+  const outOfStockItems = inventory.filter((item) => Number(item.quantity) <= 0);
+  const forecastItems = inventory
+    .map((item) => {
+      const dailyUsage = Number(item.dailyUsageEstimate || 0);
+      const quantity = Number(item.quantity || 0);
+      return {
+        ...item,
+        dailyUsage,
+        daysRemaining: dailyUsage > 0 ? Math.floor(quantity / dailyUsage) : null,
+      };
+    })
+    .sort((a, b) => (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999));
+  const totalUnits = inventory.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+  const resetForm = () => {
+    setForm(emptyForm);
+    setEditingItemId(null);
+    setError("");
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+    const payload = {
+      ...form,
+      quantity: Number(form.quantity),
+      lowStockLimit: Number(form.lowStockLimit),
+      dailyUsageEstimate: Number(form.dailyUsageEstimate || 0),
+      restaurantId: form.restaurantId || user?.restaurantId || DEFAULT_RESTAURANT_ID,
+    };
+
+    try {
+      if (editingItemId) {
+        await api.patch(`/admin/inventory/${editingItemId}`, payload);
+        setMessage(`${payload.itemName} updated.`);
+      } else {
+        await api.post("/admin/inventory", payload);
+        setMessage(`${payload.itemName} added to inventory.`);
+      }
+      resetForm();
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not save inventory item."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const editItem = (item) => {
+    setEditingItemId(item._id);
+    setMessage("");
+    setError("");
+    setForm({
+      itemName: item.itemName || "",
+      quantity: item.quantity ?? "",
+      unit: item.unit || "kg",
+      lowStockLimit: item.lowStockLimit ?? "",
+      dailyUsageEstimate: item.dailyUsageEstimate ?? "",
+      restaurantId: item.restaurantId || user?.restaurantId || DEFAULT_RESTAURANT_ID,
+    });
+  };
+
+  const adjustStock = async (item, quantity) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.patch(`/admin/inventory/${item._id}`, { quantity });
+      setMessage(`${item.itemName} stock updated.`);
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not update stock."));
+    }
+  };
+
+  const deleteItem = async (item) => {
+    setError("");
+    setMessage("");
+    try {
+      await api.delete(`/admin/inventory/${item._id}`);
+      setMessage(`${item.itemName} removed from inventory.`);
+      if (editingItemId === item._id) resetForm();
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not delete inventory item."));
+    }
+  };
+
+  return (
+    <StaffLayout role="admin">
+      <Header title="Inventory" />
+      {message && <p className="success">{message}</p>}
+      {error && <p className="error">{error}</p>}
+
+      <section className="stats-grid admin-inventory-stats">
+        <StatCard icon={PackageCheck} label="Inventory items" value={inventory.length} />
+        <StatCard icon={Trash2} label="Out of stock" value={outOfStockItems.length} />
+        <StatCard icon={Bell} label="Low stock" value={lowStockItems.length} />
+        <StatCard icon={ClipboardList} label="Total stock units" value={totalUnits} />
+      </section>
+
+      <section className="chart-card admin-low-stock-panel">
+        <div className="reservation-section-title">
+          <Bell size={18} />
+          <h2>Stock alerts</h2>
+        </div>
+        {lowStockItems.length ? (
+          <div className="admin-low-stock-list">
+            {lowStockItems.map((item) => (
+              <article className={`admin-low-stock-card ${Number(item.quantity) <= 0 ? "admin-out-stock-card" : ""}`} key={item._id}>
+                <div>
+                  <strong>{item.itemName}</strong>
+                  <StatusBadge status={Number(item.quantity) <= 0 ? "out-of-stock" : "low"} />
+                </div>
+                <p>{item.quantity} {item.unit} available. Limit is {item.lowStockLimit} {item.unit}.</p>
+                <Button variant="soft" onClick={() => editItem(item)}><Edit3 size={16} /> Check stock</Button>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState icon={Bell} title="No low stock items" text="Items will appear here when quantity reaches the low stock limit." />
+        )}
+      </section>
+
+      <div className="admin-inventory-layout">
+        <section className="chart-card admin-inventory-form-card">
+          <div className="reservation-section-title">
+            <PackageCheck size={18} />
+            <h2>{editingItemId ? "Edit inventory item" : "Add inventory item"}</h2>
+          </div>
+          <form className="admin-inventory-form" onSubmit={submit}>
+            <label>
+              <span>Item name</span>
+              <Input value={form.itemName} onChange={(event) => setForm({ ...form, itemName: event.target.value })} placeholder="Chicken breast" required />
+            </label>
+            <div className="admin-inventory-form-grid">
+              <label>
+                <span>Quantity</span>
+                <Input type="number" min="0" step="0.01" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} placeholder="25" required />
+              </label>
+              <label>
+                <span>Unit</span>
+                <select className="input" value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })}>
+                  <option value="kg">kg</option>
+                  <option value="g">g</option>
+                  <option value="L">L</option>
+                  <option value="ml">ml</option>
+                  <option value="pcs">pcs</option>
+                  <option value="packs">packs</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>Low stock limit</span>
+              <Input type="number" min="0" step="0.01" value={form.lowStockLimit} onChange={(event) => setForm({ ...form, lowStockLimit: event.target.value })} placeholder="5" required />
+            </label>
+            <label>
+              <span>Daily use estimate</span>
+              <Input type="number" min="0" step="0.01" value={form.dailyUsageEstimate} onChange={(event) => setForm({ ...form, dailyUsageEstimate: event.target.value })} placeholder="2" />
+            </label>
+            <div className="admin-inventory-actions">
+              {editingItemId && <Button type="button" variant="ghost" onClick={resetForm}>Cancel edit</Button>}
+              <Button disabled={saving}><Plus size={16} /> {saving ? "Saving..." : editingItemId ? "Update item" : "Add item"}</Button>
+            </div>
+          </form>
+        </section>
+
+        <section className="chart-card admin-inventory-list-card">
+          <div className="reservation-section-title">
+            <ClipboardList size={18} />
+            <h2>Stock check</h2>
+          </div>
+          {inventory.length ? (
+            <div className="admin-inventory-list">
+              {inventory.map((item) => {
+                const isOut = Number(item.quantity) <= 0;
+                const isLow = Number(item.quantity) <= Number(item.lowStockLimit);
+                const restockQuantity = Math.max(Number(item.lowStockLimit || 0) * 2, Number(item.quantity || 0) + 1);
+                const dailyUsage = Number(item.dailyUsageEstimate || 0);
+                const daysRemaining = dailyUsage > 0 ? Math.floor(Number(item.quantity || 0) / dailyUsage) : null;
+                return (
+                  <article className={`admin-inventory-card ${isLow ? "admin-inventory-card-low" : ""} ${isOut ? "admin-inventory-card-out" : ""}`} key={item._id}>
+                    <div className="admin-inventory-card-main">
+                      <PackageCheck />
+                      <div>
+                        <h3>{item.itemName}</h3>
+                        <p>{item.quantity} {item.unit} available - low limit {item.lowStockLimit} {item.unit}</p>
+                        <small>{dailyUsage ? `${dailyUsage} ${item.unit}/day - ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining` : "Daily use estimate not set"}</small>
+                      </div>
+                    </div>
+                    <StatusBadge status={isOut ? "out-of-stock" : isLow ? "low" : "ready"} />
+                    <div className="admin-inventory-card-actions">
+                      <Button variant="ghost" onClick={() => editItem(item)}><Edit3 size={16} /> Edit</Button>
+                      <Button variant="soft" onClick={() => adjustStock(item, restockQuantity)}><Plus size={16} /> Restock</Button>
+                      <Button variant="ghost" onClick={() => deleteItem(item)}><Trash2 size={16} /> Delete</Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState icon={PackageCheck} title="No inventory items" text="Add stock items to track low-stock alerts and reports." />
+          )}
+        </section>
+      </div>
+
+      <section className="chart-card admin-stock-forecast-panel">
+        <div className="reservation-section-title">
+          <TrendingUp size={18} />
+          <h2>Daily usage forecast</h2>
+        </div>
+        <DataTable
+          columns={[
+            { key: "itemName", label: "Item" },
+            { key: "quantity", label: "Stock", render: (row) => `${row.quantity} ${row.unit}` },
+            { key: "dailyUsage", label: "Used/day", render: (row) => row.dailyUsage ? `${row.dailyUsage} ${row.unit}` : "Not set" },
+            { key: "daysRemaining", label: "Days left", render: (row) => row.daysRemaining === null ? "Set daily use" : row.daysRemaining },
+            { key: "status", label: "Status", render: (row) => <StatusBadge status={Number(row.quantity) <= 0 ? "out-of-stock" : Number(row.quantity) <= Number(row.lowStockLimit) ? "low" : "ready"} /> },
+          ]}
+          rows={forecastItems}
+        />
+      </section>
     </StaffLayout>
   );
 }
@@ -2747,30 +4545,238 @@ function AdminReservationCard({ reservation, onAccept, onReject }) {
 }
 
 function ReportsPage() {
+  const { data: analyticsResponse } = useResource("/admin/analytics", {});
+  const { data: salesReport } = useResource("/admin/analytics/sales-report", {});
+  const { data: ordersReport } = useResource("/admin/analytics/orders-summary", {});
+  const { data: inventory } = useResource("/admin/inventory");
+  const analytics = analyticsResponse.analytics || {};
+  const categorySales = salesReport.salesByCategory || [];
+  const orderSummary = ordersReport.summary || [];
+  const totalRevenue = analytics.revenue ?? categorySales.reduce((sum, row) => sum + (row.revenue || 0), 0);
+  const totalOrders = analytics.totalOrders ?? orderSummary.reduce((sum, row) => sum + (row.count || 0), 0);
+  const totalItemsSold = categorySales.reduce((sum, row) => sum + (row.quantity || 0), 0);
+  const averageOrderValue = analytics.averageOrderValue || (totalOrders ? totalRevenue / totalOrders : 0);
+  const trendData = (analytics.chartData || []).map((row) => ({
+    ...row,
+    label: new Date(row.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+  }));
+  const statusColors = {
+    pending: "#f5ba45",
+    accepted: "#7cf8c8",
+    preparing: "#00d094",
+    ready: "#55a7ff",
+    served: "#3ee58f",
+    completed: "#3ee58f",
+    cancelled: "#ff6b57",
+  };
+  const stockForecast = inventory
+    .map((item) => {
+      const dailyUsage = Number(item.dailyUsageEstimate || 0);
+      const quantity = Number(item.quantity || 0);
+      return {
+        ...item,
+        dailyUsage,
+        daysRemaining: dailyUsage > 0 ? Math.floor(quantity / dailyUsage) : null,
+      };
+    })
+    .sort((a, b) => (a.daysRemaining ?? 9999) - (b.daysRemaining ?? 9999));
+
   return (
     <StaffLayout role="admin">
       <Header title="Reports" />
+      <section className="stats-grid report-stats">
+        <StatCard icon={WalletCards} label="Revenue" value={money(totalRevenue)} />
+        <StatCard icon={ClipboardList} label="Orders" value={totalOrders} />
+        <StatCard icon={PackageCheck} label="Items sold" value={totalItemsSold} />
+        <StatCard icon={TrendingUp} label="Avg order" value={money(averageOrderValue)} />
+      </section>
+
       <div className="report-grid">
-        <AdminResourceCard title="Sales report" path="/admin/analytics/sales-report" icon={BarChart3} />
-        <AdminResourceCard title="Order summary" path="/admin/analytics/orders-summary" icon={ClipboardList} />
+        <section className="chart-card report-card report-card-wide">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Sales</span>
+              <h2>Revenue trend</h2>
+            </div>
+            <BarChart3 />
+          </div>
+          {trendData.length ? (
+            <ResponsiveContainer height={280}>
+              <BarChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(120, 140, 130, 0.2)" />
+                <XAxis dataKey="label" />
+                <YAxis />
+                <Tooltip formatter={(value, name) => [name === "revenue" ? money(value) : value, name]} />
+                <Bar dataKey="revenue" fill="#00d094" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="orders" fill="#7cf8c8" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <EmptyState icon={BarChart3} title="No sales yet" text="Revenue trend will appear after orders are created." />
+          )}
+        </section>
+
+        <section className="chart-card report-card report-category-card">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Orders</span>
+              <h2>Status summary</h2>
+            </div>
+            <ClipboardList />
+          </div>
+          {orderSummary.length ? (
+            <>
+              <ResponsiveContainer height={220}>
+                <PieChart>
+                  <Pie data={orderSummary} dataKey="count" nameKey="_id" outerRadius={82} innerRadius={48}>
+                    {orderSummary.map((row) => <Cell key={row._id} fill={statusColors[row._id] || "#aeb9b5"} />)}
+                  </Pie>
+                  <Tooltip formatter={(value, name, item) => [value, item.payload._id]} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="report-status-list">
+                {orderSummary.map((row) => (
+                  <div key={row._id}>
+                    <span><i style={{ background: statusColors[row._id] || "#aeb9b5" }} />{row._id || "unknown"}</span>
+                    <strong>{row.count} orders</strong>
+                    <small>{money(row.totalAmount)}</small>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <EmptyState icon={ClipboardList} title="No orders yet" text="Order statuses will appear here." />
+          )}
+        </section>
+
+        <section className="chart-card report-card">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Categories</span>
+              <h2>Sales by category</h2>
+            </div>
+            <Utensils />
+          </div>
+          {categorySales.length ? (
+            <DataTable
+              columns={[
+                { key: "_id", label: "Category", render: (row) => row._id || "Uncategorized" },
+                { key: "quantity", label: "Qty" },
+                { key: "revenue", label: "Revenue", render: (row) => money(row.revenue) },
+              ]}
+              rows={categorySales}
+            />
+          ) : (
+            <EmptyState icon={Utensils} title="No category sales" text="Category report will appear after items are sold." />
+          )}
+        </section>
+
+        <section className="chart-card report-card">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Menu</span>
+              <h2>Top selling foods</h2>
+            </div>
+            <Star />
+          </div>
+          {(analytics.topSellingFoods || []).length ? (
+            <DataTable
+              columns={[
+                { key: "name", label: "Item" },
+                { key: "quantitySold", label: "Sold" },
+                { key: "revenue", label: "Revenue", render: (row) => money(row.revenue) },
+              ]}
+              rows={analytics.topSellingFoods}
+            />
+          ) : (
+            <EmptyState icon={Star} title="No top items yet" text="Top sellers will appear after orders are placed." />
+          )}
+        </section>
+
+        <section className="chart-card report-card">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Inventory</span>
+              <h2>Low stock alerts</h2>
+            </div>
+            <PackageCheck />
+          </div>
+          {(analytics.lowStockAlerts || []).length ? (
+            <div className="report-alert-list">
+              {analytics.lowStockAlerts.map((item) => (
+                <article key={item.name}>
+                  <strong>{item.name}</strong>
+                  <span>{item.stock} {item.unit} left</span>
+                  <small>Limit: {item.threshold} {item.unit}</small>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={PackageCheck} title="Stock looks good" text="Low stock items will be listed here." />
+          )}
+        </section>
+
+        <section className="chart-card report-card report-card-wide">
+          <div className="report-card-head">
+            <div>
+              <span className="eyebrow">Activity</span>
+              <h2>Recent orders</h2>
+            </div>
+            <ReceiptText />
+          </div>
+          {(analytics.recentOrders || []).length ? (
+            <DataTable
+              columns={[
+                { key: "orderNumber", label: "Order" },
+                { key: "customerName", label: "Customer", render: (row) => row.customerName || row.customer?.name || "Guest" },
+                { key: "tableNumber", label: "Table" },
+                { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                { key: "totalAmount", label: "Total", render: (row) => money(row.totalAmount) },
+              ]}
+              rows={analytics.recentOrders}
+            />
+          ) : (
+            <EmptyState icon={ReceiptText} title="No recent orders" text="Recent orders will show here as they come in." />
+          )}
+        </section>
       </div>
+
+      <section className="chart-card report-table-section">
+        <div className="report-card-head">
+          <div>
+            <span className="eyebrow">Inventory</span>
+            <h2>Daily usage forecast</h2>
+          </div>
+          <TrendingUp />
+        </div>
+        {stockForecast.length ? (
+          <DataTable
+            columns={[
+              { key: "itemName", label: "Item" },
+              { key: "quantity", label: "Stock", render: (row) => `${row.quantity} ${row.unit}` },
+              { key: "dailyUsage", label: "Used/day", render: (row) => row.dailyUsage ? `${row.dailyUsage} ${row.unit}` : "Not set" },
+              { key: "daysRemaining", label: "Days left", render: (row) => row.daysRemaining === null ? "Set daily use" : row.daysRemaining },
+              { key: "status", label: "Status", render: (row) => <StatusBadge status={Number(row.quantity) <= 0 ? "out-of-stock" : Number(row.quantity) <= Number(row.lowStockLimit) ? "low" : "ready"} /> },
+            ]}
+            rows={stockForecast}
+          />
+        ) : (
+          <EmptyState icon={PackageCheck} title="No inventory forecast" text="Add inventory items and daily use estimates to generate this report." />
+        )}
+      </section>
     </StaffLayout>
   );
 }
 
-function AdminResourceCard({ title, path, icon: Icon }) {
-  const { data } = useResource(path, {});
-  return <div className="feature-card"><Icon /><h3>{title}</h3><pre>{JSON.stringify(data, null, 2)}</pre></div>;
-}
-
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AppProviders>
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<LoginPage mode="register" />} />
+          <Route path="/staff-kiosk" element={<StaffAttendanceKioskPage />} />
           <Route path="/menu/:tableId" element={<MenuPage />} />
           <Route path="/customer" element={<ProtectedRoute roles={["customer"]}><CustomerDashboard /></ProtectedRoute>} />
           <Route path="/customer/menu" element={<ProtectedRoute roles={["customer"]}><MenuPage /></ProtectedRoute>} />
@@ -2783,19 +4789,24 @@ function App() {
           <Route path="/customer/reservations" element={<ProtectedRoute roles={["customer"]}><ReservationPage /></ProtectedRoute>} />
           <Route path="/customer/reviews" element={<ProtectedRoute roles={["customer"]}><ReviewPage /></ProtectedRoute>} />
           <Route path="/waiter" element={<ProtectedRoute roles={["waiter"]}><WaiterDashboard /></ProtectedRoute>} />
+          <Route path="/waiter/attendance" element={<ProtectedRoute roles={["waiter"]}><WaiterAttendancePage /></ProtectedRoute>} />
+          <Route path="/waiter/profile" element={<ProtectedRoute roles={["waiter"]}><WaiterProfilePage /></ProtectedRoute>} />
           <Route path="/waiter/tables" element={<ProtectedRoute roles={["waiter"]}><WaiterTables /></ProtectedRoute>} />
           <Route path="/waiter/manual-order" element={<ProtectedRoute roles={["waiter"]}><ManualOrder /></ProtectedRoute>} />
           <Route path="/kitchen" element={<ProtectedRoute roles={["chef", "staff", "kitchen"]}><KitchenDashboard /></ProtectedRoute>} />
+          <Route path="/kitchen/attendance" element={<ProtectedRoute roles={["chef", "staff", "kitchen"]}><KitchenAttendancePage /></ProtectedRoute>} />
           <Route path="/kitchen/inventory" element={<ProtectedRoute roles={["chef", "staff", "kitchen"]}><InventoryPage /></ProtectedRoute>} />
           <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><AdminDashboard /></ProtectedRoute>} />
           <Route path="/admin/users" element={<ProtectedRoute roles={["admin"]}><AdminUsersPage /></ProtectedRoute>} />
+          <Route path="/admin/attendance" element={<ProtectedRoute roles={["admin"]}><AdminAttendancePage /></ProtectedRoute>} />
+          <Route path="/admin/payroll" element={<ProtectedRoute roles={["admin"]}><AdminPayrollPage /></ProtectedRoute>} />
           <Route path="/admin/menu" element={<ProtectedRoute roles={["admin"]}><AdminMenuPage /></ProtectedRoute>} />
           <Route path="/admin/tables" element={<ProtectedRoute roles={["admin"]}><AdminTablesPage /></ProtectedRoute>} />
           <Route path="/admin/orders" element={<ProtectedRoute roles={["admin"]}><AdminResource title="Orders" path="/admin/orders" columns={[{ key: "orderNumber", label: "Order" }, { key: "customerName", label: "Customer" }, { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> }, { key: "totalAmount", label: "Total", render: (row) => money(row.totalAmount) }]} /></ProtectedRoute>} />
           <Route path="/admin/payments" element={<ProtectedRoute roles={["admin"]}><AdminResource title="Payments" path="/admin/payments" columns={[{ key: "paymentMethod", label: "Method" }, { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> }, { key: "amount", label: "Amount", render: (row) => money(row.amount) }]} /></ProtectedRoute>} />
           <Route path="/admin/reviews" element={<ProtectedRoute roles={["admin"]}><AdminResource title="Reviews" path="/admin/reviews" columns={[{ key: "rating", label: "Rating" }, { key: "comment", label: "Comment" }]} /></ProtectedRoute>} />
           <Route path="/admin/reservations" element={<ProtectedRoute roles={["admin"]}><AdminReservationsPage /></ProtectedRoute>} />
-          <Route path="/admin/inventory" element={<ProtectedRoute roles={["admin"]}><AdminResource title="Inventory" path="/admin/inventory" columns={[{ key: "itemName", label: "Item" }, { key: "quantity", label: "Qty" }, { key: "unit", label: "Unit" }, { key: "lowStockLimit", label: "Low limit" }]} /></ProtectedRoute>} />
+          <Route path="/admin/inventory" element={<ProtectedRoute roles={["admin"]}><AdminInventoryPage /></ProtectedRoute>} />
           <Route path="/admin/reports" element={<ProtectedRoute roles={["admin"]}><ReportsPage /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
@@ -2804,4 +4815,15 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+const rootElement = document.getElementById("root");
+const root = rootElement._dineflowRoot || createRoot(rootElement);
+rootElement._dineflowRoot = root;
+root.render(<App />);
+
+if ("serviceWorker" in navigator && (import.meta.env.PROD || location.hostname === "localhost")) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+
+
