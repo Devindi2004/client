@@ -92,9 +92,6 @@ function readStoredUser() {
       if (legacyUser) sessionStorage.setItem(AUTH_USER_KEY, legacyUser);
       if (legacyToken) sessionStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
       if (legacyRefresh) sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
-      localStorage.removeItem(AUTH_USER_KEY);
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-      localStorage.removeItem(AUTH_REFRESH_KEY);
     }
     return JSON.parse(legacyUser || "null");
   } catch {
@@ -111,8 +108,6 @@ function getStoredToken() {
   if (legacyToken) {
     sessionStorage.setItem(AUTH_TOKEN_KEY, legacyToken);
     if (legacyRefresh) sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    localStorage.removeItem(AUTH_REFRESH_KEY);
   }
   return legacyToken;
 }
@@ -124,27 +119,33 @@ function getStoredRefreshToken() {
   const legacyRefresh = localStorage.getItem(AUTH_REFRESH_KEY);
   if (legacyRefresh) {
     sessionStorage.setItem(AUTH_REFRESH_KEY, legacyRefresh);
-    localStorage.removeItem(AUTH_REFRESH_KEY);
   }
   return legacyRefresh;
 }
 
 function storeAuthSession(data) {
-  if (data?.accessToken) sessionStorage.setItem(AUTH_TOKEN_KEY, data.accessToken);
-  if (data?.refreshToken) sessionStorage.setItem(AUTH_REFRESH_KEY, data.refreshToken);
+  if (data?.accessToken) {
+    sessionStorage.setItem(AUTH_TOKEN_KEY, data.accessToken);
+    localStorage.setItem(AUTH_TOKEN_KEY, data.accessToken);
+  }
+  if (data?.refreshToken) {
+    sessionStorage.setItem(AUTH_REFRESH_KEY, data.refreshToken);
+    localStorage.setItem(AUTH_REFRESH_KEY, data.refreshToken);
+  }
   if (data?.user) {
-    sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
+    const userValue = JSON.stringify(data.user);
+    sessionStorage.setItem(AUTH_USER_KEY, userValue);
+    localStorage.setItem(AUTH_USER_KEY, userValue);
     if (data.user.restaurantId) localStorage.setItem("dineflow_restaurant_id", data.user.restaurantId);
   }
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(AUTH_REFRESH_KEY);
-  localStorage.removeItem(AUTH_USER_KEY);
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
 function updateStoredUser(user) {
   if (!user) return;
-  sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  const userValue = JSON.stringify(user);
+  sessionStorage.setItem(AUTH_USER_KEY, userValue);
+  localStorage.setItem(AUTH_USER_KEY, userValue);
   if (user.restaurantId) localStorage.setItem("dineflow_restaurant_id", user.restaurantId);
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
@@ -153,10 +154,22 @@ function clearStoredSession() {
   sessionStorage.removeItem(AUTH_TOKEN_KEY);
   sessionStorage.removeItem(AUTH_REFRESH_KEY);
   sessionStorage.removeItem(AUTH_USER_KEY);
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_REFRESH_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
   window.dispatchEvent(new Event(SESSION_UPDATED_EVENT));
 }
 
 let refreshRequest = null;
+let authRedirecting = false;
+
+function redirectToLoginAfterAuthFailure() {
+  if (authRedirecting || window.location.pathname === "/login") return;
+  authRedirecting = true;
+  window.setTimeout(() => {
+    window.location.assign("/login");
+  }, 0);
+}
 
 api.interceptors.response.use(
   (response) => response,
@@ -172,6 +185,7 @@ api.interceptors.response.use(
     const refreshToken = getStoredRefreshToken();
     if (!refreshToken) {
       clearStoredSession();
+      redirectToLoginAfterAuthFailure();
       return Promise.reject(error);
     }
 
@@ -196,6 +210,7 @@ api.interceptors.response.use(
       return api(originalRequest);
     } catch (refreshError) {
       clearStoredSession();
+      redirectToLoginAfterAuthFailure();
       return Promise.reject(refreshError);
     }
   },
@@ -212,6 +227,8 @@ const DASHBOARD_DEMO_MENU = [
   { _id: "demo-pasta-alfredo", name: "Pasta Alfredo", price: 420, rating: 4.7 },
 ];
 const DASHBOARD_DEMO_CART_ITEM = { ...DASHBOARD_DEMO_MENU[0], quantity: 1 };
+
+const currentTableLabel = (fallback = "01") => localStorage.getItem("dineflow_table_number") || localStorage.getItem("dineflow_table_id") || fallback;
 
 function calculateOrderTotals(subtotal = 0) {
   const serviceFee = Math.round(Number(subtotal) * SERVICE_CHARGE_RATE);
@@ -488,11 +505,11 @@ function MobileNav({ links }) {
   return <nav className="mobile-nav">{links.map((link) => <Link key={link.to} to={link.to}><link.icon size={18} /><span>{link.label}</span></Link>)}</nav>;
 }
 
-function Modal({ open, title, children, onClose }) {
+function Modal({ open, title, children, onClose, className = "" }) {
   if (!open) return null;
   return (
     <div className="modal-backdrop">
-      <div className="modal">
+      <div className={`modal ${className}`}>
         <div className="modal-head"><h3>{title}</h3><Button variant="ghost" onClick={onClose}>Close</Button></div>
         {children}
       </div>
@@ -520,7 +537,7 @@ function DataTable({ columns, rows }) {
 function ProtectedRoute({ roles, children }) {
   const { user } = useAuth();
   const location = useLocation();
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!user) return <Navigate to="/login" state={{ from: { pathname: location.pathname, search: location.search, hash: location.hash, roles } }} replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to={roleHome(user.role)} replace />;
   return children;
 }
@@ -688,21 +705,37 @@ function LandingPage() {
 function LoginPage({ mode = "login" }) {
   const { login, register, googleLogin } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const googleButtonRef = useRef(null);
   const [form, setForm] = useState({ name: "", email: "customer@example.com", password: "Customer@123", phone: "", role: "customer" });
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(true);
   const [googleReady, setGoogleReady] = useState(false);
+  const [googleError, setGoogleError] = useState("");
+  const redirectAfterAuth = (user) => {
+    const from = location.state?.from;
+    if (from?.pathname && (!from.roles || from.roles.includes(user.role))) {
+      navigate(`${from.pathname}${from.search || ""}${from.hash || ""}`, { replace: true });
+      return;
+    }
+    navigate(roleHome(user.role), { replace: true });
+  };
 
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID || mode !== "login") return;
+    setGoogleReady(false);
+    setGoogleError("");
+    if (mode !== "login") return;
+    if (!GOOGLE_CLIENT_ID) {
+      setGoogleError("Google login is not configured yet.");
+      return;
+    }
 
     const handleCredential = async (response) => {
       setError("");
       try {
         const user = await googleLogin(response.credential);
-        navigate(roleHome(user.role));
+        redirectAfterAuth(user);
       } catch (err) {
         setError(apiErrorMessage(err, "Google login failed."));
       }
@@ -710,18 +743,25 @@ function LoginPage({ mode = "login" }) {
 
     const initializeGoogle = () => {
       if (!window.google?.accounts?.id || !googleButtonRef.current) return;
+      setGoogleError("");
+      window.google.accounts.id.disableAutoSelect();
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
         callback: handleCredential,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        context: "signin",
+        use_fedcm_for_prompt: true,
       });
       googleButtonRef.current.innerHTML = "";
       window.google.accounts.id.renderButton(googleButtonRef.current, {
         theme: "outline",
         size: "large",
         type: "standard",
-        shape: "rectangular",
-        text: "continue_with",
-        width: 220,
+        shape: "pill",
+        text: "signin_with",
+        logo_alignment: "left",
+        width: 360,
       });
       setGoogleReady(true);
     };
@@ -742,6 +782,7 @@ function LoginPage({ mode = "login" }) {
     script.async = true;
     script.defer = true;
     script.onload = initializeGoogle;
+    script.onerror = () => setGoogleError("Could not load Google sign-in. Check your internet connection.");
     document.head.appendChild(script);
   }, [googleLogin, mode, navigate]);
 
@@ -750,7 +791,7 @@ function LoginPage({ mode = "login" }) {
     setError("");
     try {
       const user = mode === "register" ? await register(form) : await login(form.email, form.password);
-      navigate(roleHome(user.role));
+      redirectAfterAuth(user);
     } catch (err) {
       setError(apiErrorMessage(err, "Authentication failed."));
     }
@@ -808,12 +849,14 @@ function LoginPage({ mode = "login" }) {
           {mode === "login" && (
             <>
               <div className="auth-divider"><span />or continue with<span /></div>
-              <div className="auth-social-grid">
-                <div className="google-signin-slot" ref={googleButtonRef}>
-                  {!GOOGLE_CLIENT_ID ? <span className="auth-provider-disabled">Set VITE_GOOGLE_CLIENT_ID</span> : !googleReady ? <span>Loading Google...</span> : null}
+              <div className="auth-google-box">
+                <div className="auth-google-mark">G</div>
+                <div className={`google-signin-slot ${!GOOGLE_CLIENT_ID || googleError ? "not-configured" : ""}`} ref={googleButtonRef}>
+                  {!GOOGLE_CLIENT_ID || googleError ? <span className="auth-provider-disabled"><b>G</b> Sign in with Google</span> : !googleReady ? <span>Loading Google...</span> : null}
                 </div>
                 <button type="button" className="auth-provider-button" disabled><span className="microsoft-logo">■</span> Microsoft</button>
               </div>
+              {googleError && <p className="auth-google-hint">{googleError} Add the Google Client ID to frontend and backend env files.</p>}
             </>
           )}
         </form>
@@ -863,7 +906,7 @@ function CustomerDashboard() {
   const { data: menu } = useResource("/menu");
   const lastOrder = orders[0];
   const activeOrders = orders.filter((order) => !["completed", "served", "cancelled"].includes(order.status)).length;
-  const tableLabel = lastOrder?.tableNumber || localStorage.getItem("dineflow_table_id") || "demo-table";
+  const tableLabel = lastOrder?.tableNumber || currentTableLabel("demo-table");
   const featuredMenu = menu.slice(0, 3);
   const dashboardMenuPreview = featuredMenu.length ? featuredMenu : DASHBOARD_DEMO_MENU;
   const hasCartItems = cart.items.length > 0;
@@ -1012,6 +1055,33 @@ function CustomerDashboard() {
   );
 }
 
+function CustomerTableEntryPage() {
+  const { tableId } = useParams();
+  const navigate = useNavigate();
+  const { data: table, loading } = useResource(tableId ? `/tables/${tableId}` : null, null);
+
+  useEffect(() => {
+    if (!table?._id) return;
+    localStorage.setItem("dineflow_table_id", table._id);
+    localStorage.setItem("dineflow_table_number", table.tableNumber || table._id);
+    navigate("/customer/menu", { replace: true });
+  }, [table, navigate]);
+
+  return (
+    <CustomerLayout showMobileNav={false}>
+      <section className="qr-table-entry">
+        <div className="checkout-success-icon">
+          <QrCode size={42} />
+        </div>
+        <span className="eyebrow">Table QR</span>
+        <h1>{loading ? "Opening your table menu" : table?._id ? `Table ${table.tableNumber}` : "Table not found"}</h1>
+        <p>{loading ? "Please wait while we connect this QR code to your customer menu." : table?._id ? "Redirecting to the digital menu." : "Please ask a waiter to check this table QR code."}</p>
+        {!loading && !table?._id && <Link className="btn btn-primary" to="/customer"><Home size={16} /> Customer home</Link>}
+      </section>
+    </CustomerLayout>
+  );
+}
+
 function MenuPage() {
   const { tableId } = useParams();
   const location = useLocation();
@@ -1069,7 +1139,7 @@ function MenuPage() {
             </label>
             <div className="foodhut-hero-actions">
               <a className="btn btn-primary" href="#menu-catalog"><BookOpen size={16} /> View menu</a>
-              {!viewOnly && <button className="btn btn-soft" type="button"><ShoppingCart size={16} /> Table {tableId || localStorage.getItem("dineflow_table_id") || "01"}</button>}
+              {!viewOnly && <button className="btn btn-soft" type="button"><ShoppingCart size={16} /> Table {tableId || currentTableLabel()}</button>}
             </div>
           </div>
 
@@ -1229,7 +1299,7 @@ function MenuItemCard({ item, onAdd }) {
 }
 
 function MenuSideCart({ cart, itemCount, serviceFee, subtotal, tableId, tax, total, onCheckout }) {
-  const tableNumber = tableId || localStorage.getItem("dineflow_table_id") || "01";
+  const tableNumber = tableId || currentTableLabel();
 
   return (
     <aside className="menu-cart-panel" aria-label="Selected order cart">
@@ -1300,7 +1370,7 @@ function CartPage() {
   const subtotal = cart.total;
   const { serviceFee, tax, total } = calculateOrderTotals(subtotal);
   const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-  const tableNumber = localStorage.getItem("dineflow_table_id") || "demo-table";
+  const tableNumber = currentTableLabel("demo-table");
 
   return (
     <CustomerLayout>
@@ -1391,7 +1461,7 @@ function CheckoutPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { subtotal, serviceFee, tax, total } = calculateOrderTotals(cart.total);
-  const [form, setForm] = useState({ customerName: user?.name || "", contactNumber: user?.phone || "", tableNumber: localStorage.getItem("dineflow_table_id") || "01", paymentMethod: "cash", specialInstructions: "" });
+  const [form, setForm] = useState({ customerName: user?.name || "", contactNumber: user?.phone || "", tableNumber: currentTableLabel(), paymentMethod: "cash", specialInstructions: "" });
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [error, setError] = useState("");
   const [successReceipt, setSuccessReceipt] = useState(null);
@@ -1408,6 +1478,22 @@ function CheckoutPage() {
     DEFAULT_RESTAURANT_ID ||
     cart.items.find((item) => item.restaurantId)?.restaurantId?._id ||
     cart.items.find((item) => item.restaurantId)?.restaurantId;
+
+  const redirectToPayHere = (checkoutUrl, fields) => {
+    const formElement = document.createElement("form");
+    formElement.method = "POST";
+    formElement.action = checkoutUrl;
+    formElement.style.display = "none";
+    Object.entries(fields || {}).forEach(([key, value]) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = String(value ?? "");
+      formElement.appendChild(input);
+    });
+    document.body.appendChild(formElement);
+    formElement.submit();
+  };
 
   const placeOrder = async () => {
     setError("");
@@ -1457,8 +1543,18 @@ function CheckoutPage() {
         })),
       };
       const order = unwrap(await api.post("/orders", payload));
-      await api.post("/payments", { orderId: order._id, paymentMethod: form.paymentMethod, amount: total });
+      const paymentResponse = unwrap(await api.post("/payments", { orderId: order._id, paymentMethod: form.paymentMethod, amount: total }));
       cart.clear();
+      if (form.paymentMethod === "payhere") {
+        setSuccessReceipt({
+          ...receiptSnapshot,
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          paymentStatus: "redirecting",
+        });
+        window.setTimeout(() => redirectToPayHere(paymentResponse.checkoutUrl, paymentResponse.payhereData), 400);
+        return;
+      }
       setSuccessReceipt({
         ...receiptSnapshot,
         orderId: order._id,
@@ -1683,14 +1779,30 @@ function CheckoutSuccess({ receipt }) {
 
 function PaymentPage() {
   const { orderId } = useParams();
-  const { data: order } = useResource(`/orders/${orderId}`, null);
+  const location = useLocation();
+  const { data: order, load } = useResource(`/orders/${orderId}`, null);
+  const { data: payment } = useResource(`/payments/order/${orderId}`, null);
+  const paymentStatus = new URLSearchParams(location.search).get("status");
+
+  useEffect(() => {
+    const timer = window.setInterval(load, 3000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
   return (
     <CustomerLayout>
       <Header title="Payment" />
       <div className="payment-card">
         <CreditCard size={40} />
-        <h2>{order?.paymentStatus === "paid" ? "Payment complete" : "Payment pending"}</h2>
-        <p>{order?.paymentMethod === "payhere" ? "PayHere is configured in test mode; backend returns the signed payload for integration." : "Mock payments are processed immediately for cash and card."}</p>
+        <h2>{order?.paymentStatus === "paid" ? "Payment complete" : paymentStatus === "cancel" ? "Payment cancelled" : "Payment pending"}</h2>
+        <p>
+          {order?.paymentStatus === "paid"
+            ? "Your PayHere payment was verified and the order has been updated."
+            : paymentStatus === "cancel"
+              ? "The PayHere checkout was cancelled. You can return to the menu and place the order again."
+              : "Waiting for PayHere confirmation. This page will refresh automatically when the payment notification arrives."}
+        </p>
+        {payment?.transactionId && <p className="muted">Transaction ID: {payment.transactionId}</p>}
         <Link className="btn btn-primary" to={`/customer/tracking/${order?.orderNumber || orderId}`}>Track order</Link>
       </div>
     </CustomerLayout>
@@ -3237,16 +3349,31 @@ function AdminDashboard() {
             <ReceiptText />
           </div>
           {recentOrders.length ? (
-            <DataTable
-              columns={[
-                { key: "orderNumber", label: "Order" },
-                { key: "customerName", label: "Customer", render: (row) => row.customerName || row.customer?.name || "Guest" },
-                { key: "tableNumber", label: "Table" },
-                { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
-                { key: "totalAmount", label: "Total", render: (row) => money(row.totalAmount) },
-              ]}
-              rows={recentOrders.slice(0, 6)}
-            />
+            <div className="admin-recent-orders">
+              {recentOrders.slice(0, 6).map((order) => (
+                <article key={order._id || order.orderNumber}>
+                  <div className="admin-recent-order-main">
+                    <span className="admin-order-icon"><ReceiptText size={18} /></span>
+                    <div>
+                      <strong>{order.orderNumber}</strong>
+                      <small>{new Date(order.createdAt || order.updatedAt || Date.now()).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
+                    </div>
+                  </div>
+                  <div>
+                    <span>Customer</span>
+                    <strong>{order.customerName || order.customer?.name || "Guest"}</strong>
+                  </div>
+                  <div>
+                    <span>Table</span>
+                    <strong>{order.tableNumber || "Pending"}</strong>
+                  </div>
+                  <div className="admin-recent-order-status">
+                    <StatusBadge status={order.status} />
+                    <b>{money(order.totalAmount)}</b>
+                  </div>
+                </article>
+              ))}
+            </div>
           ) : (
             <EmptyState icon={ReceiptText} title="No recent orders" text="Recent orders will appear here." />
           )}
@@ -3273,17 +3400,24 @@ function AdminResource({ title, path, columns }) {
 
 function AdminUsersPage() {
   const { data: users, load } = useResource("/admin/users");
-  const emptyForm = { name: "", email: "", password: "", phone: "", whatsappNumber: "", role: "waiter", salaryType: "monthly", monthlySalary: "", dailyRate: "", hourlyRate: "", overtimeRate: "" };
+  const newPin = () => String(Math.floor(1000 + Math.random() * 9000));
+  const emptyForm = () => ({ name: "", email: "", password: "Staff@123", phone: "", whatsappNumber: "", role: "waiter", salaryType: "monthly", monthlySalary: "", dailyRate: "", hourlyRate: "", overtimeRate: "", attendancePin: newPin() });
+  const staffRoleOptions = [
+    { value: "waiter", label: "Waiter", text: "Serve tables and update served orders." },
+    { value: "chef", label: "Chef", text: "Accept and prepare kitchen orders." },
+    { value: "kitchen", label: "Kitchen helper", text: "Kitchen support and stock work." },
+    { value: "staff", label: "Staff / Cleaner", text: "General staff attendance and payroll." },
+  ];
   const [open, setOpen] = useState(false);
   const [qrUser, setQrUser] = useState(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const adminQrRef = useRef(null);
 
   const openCreateForm = () => {
-    setForm(emptyForm);
+    setForm(emptyForm());
     setError("");
     setSuccess("");
     setOpen(true);
@@ -3295,10 +3429,18 @@ function AdminUsersPage() {
     setError("");
     setSuccess("");
     try {
-      await api.post("/admin/users", form);
+      const created = unwrap(await api.post("/admin/users", {
+        ...form,
+        monthlySalary: Number(form.monthlySalary || 0),
+        dailyRate: Number(form.dailyRate || 0),
+        hourlyRate: Number(form.hourlyRate || 0),
+        overtimeRate: Number(form.overtimeRate || 0),
+      }));
       setSuccess(`${form.name} added as ${form.role}.`);
-      setForm(emptyForm);
+      setForm(emptyForm());
       await load();
+      setOpen(false);
+      if (created?.attendanceQrPayload) setQrUser(created);
     } catch (err) {
       setError(err.response?.status === 409 ? "This email is already registered. Use a different email for the staff member." : apiErrorMessage(err, "Could not add staff user."));
     } finally {
@@ -3343,7 +3485,7 @@ function AdminUsersPage() {
 
   return (
     <StaffLayout role="admin">
-      <Header title="Users" actions={<Button onClick={openCreateForm}><Plus size={16} /> Add</Button>} />
+      <Header title="Users" actions={<Button onClick={openCreateForm}><Plus size={16} /> Add staff</Button>} />
       <DataTable
         columns={[
           { key: "name", label: "Name" },
@@ -3371,8 +3513,21 @@ function AdminUsersPage() {
           </div>
         </div>
       </Modal>
-      <Modal open={open} title="Add staff user" onClose={() => setOpen(false)}>
+      <Modal open={open} title="Add staff member" onClose={() => setOpen(false)} className="admin-user-modal">
         <form className="admin-user-form" onSubmit={submit}>
+          <div className="admin-role-picker">
+            {staffRoleOptions.map((option) => (
+              <button
+                className={form.role === option.value ? "active" : ""}
+                key={option.value}
+                type="button"
+                onClick={() => setForm({ ...form, role: option.value })}
+              >
+                <strong>{option.label}</strong>
+                <span>{option.text}</span>
+              </button>
+            ))}
+          </div>
           <label>
             <span>Name</span>
             <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Demo Waiter" required />
@@ -3398,8 +3553,16 @@ function AdminUsersPage() {
             <select className="input" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
               <option value="waiter">Waiter</option>
               <option value="chef">Chef</option>
+              <option value="kitchen">Kitchen helper</option>
               <option value="staff">Staff</option>
             </select>
+          </label>
+          <label>
+            <span>Attendance PIN</span>
+            <div className="admin-pin-field">
+              <Input value={form.attendancePin} onChange={(event) => setForm({ ...form, attendancePin: event.target.value })} placeholder="0001" minLength={4} maxLength={12} />
+              <Button type="button" variant="soft" onClick={() => setForm({ ...form, attendancePin: newPin() })}>Generate</Button>
+            </div>
           </label>
           <label>
             <span>Salary type</span>
@@ -3410,7 +3573,7 @@ function AdminUsersPage() {
           </label>
           <label>
             <span>Monthly salary</span>
-            <Input type="number" min="0" step="0.01" value={form.monthlySalary} onChange={(event) => setForm({ ...form, monthlySalary: event.target.value })} placeholder="75000" />
+            <Input type="number" min="0" step="0.01" value={form.monthlySalary} onChange={(event) => setForm({ ...form, monthlySalary: event.target.value })} placeholder="75000" disabled={form.salaryType === "hourly"} />
           </label>
           <label>
             <span>Daily rate</span>
@@ -3418,7 +3581,7 @@ function AdminUsersPage() {
           </label>
           <label>
             <span>Hourly rate</span>
-            <Input type="number" min="0" step="0.01" value={form.hourlyRate} onChange={(event) => setForm({ ...form, hourlyRate: event.target.value })} placeholder="850" />
+            <Input type="number" min="0" step="0.01" value={form.hourlyRate} onChange={(event) => setForm({ ...form, hourlyRate: event.target.value })} placeholder="850" disabled={form.salaryType === "monthly"} />
           </label>
           <label>
             <span>Overtime rate</span>
@@ -3443,40 +3606,59 @@ function AdminPayrollPage() {
   const { data: attendanceRecords, load: loadAttendance } = useResource("/admin/attendance");
   const staffUsers = users.filter((user) => ["waiter", "chef", "staff", "kitchen"].includes(user.role));
   const emptyForm = { staffId: "", month: currentMonth, baseSalary: "", allowances: "0", deductions: "0", notes: "" };
-  const emptyAttendanceForm = { staffId: "", date: new Date().toISOString().slice(0, 10), status: "present", startTime: "09:00", endTime: "17:00", breakHours: "1", shortLeaveHours: "0", notes: "" };
   const [form, setForm] = useState(emptyForm);
-  const [attendanceForm, setAttendanceForm] = useState(emptyAttendanceForm);
   const [editingPayrollId, setEditingPayrollId] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [savingAttendance, setSavingAttendance] = useState(false);
   const [generatingPayroll, setGeneratingPayroll] = useState(false);
   const [payrollSearch, setPayrollSearch] = useState("");
   const [payrollStatusFilter, setPayrollStatusFilter] = useState("all");
+  const [payrollRoleFilter, setPayrollRoleFilter] = useState("all");
+  const [payrollMonthFilter, setPayrollMonthFilter] = useState(currentMonth);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const selectedAttendance = attendanceRecords.filter((record) => (!form.staffId || String(record.staffId) === form.staffId) && record.month === form.month);
+
+  const idOf = (value) => String(typeof value === "object" && value ? value._id || value.id || "" : value || "");
+  const selectedStaff = staffUsers.find((staff) => idOf(staff.id || staff._id) === form.staffId);
+  const selectedAttendance = attendanceRecords.filter((record) => (!form.staffId || idOf(record.staffId) === form.staffId) && record.month === form.month);
   const absentDays = selectedAttendance.filter((record) => record.status === "absent").length;
+  const presentDays = selectedAttendance.filter((record) => ["present", "late"].includes(record.status)).length;
   const shortLeaveHours = selectedAttendance.reduce((sum, record) => sum + Number(record.shortLeaveHours || 0), 0);
-  const workedHours = selectedAttendance.reduce((sum, record) => sum + Number(record.workedHours || 0), 0);
+  const workedHours = selectedAttendance.reduce((sum, record) => sum + Number(record.workingHours || record.workedHours || 0), 0);
+  const overtimeHours = selectedAttendance.reduce((sum, record) => sum + Math.max(0, Number(record.workingHours || record.workedHours || 0) - 8), 0);
   const monthParts = form.month.split("-").map(Number);
   const daysInMonth = form.month ? new Date(monthParts[0], monthParts[1], 0).getDate() : 30;
-  const dailyRate = Number(form.baseSalary || 0) / Math.max(1, daysInMonth);
-  const hourlyRate = dailyRate / 8;
+  const profileBaseSalary = selectedStaff?.salaryType === "hourly"
+    ? Number(selectedStaff.hourlyRate || 0) * workedHours
+    : Number(selectedStaff?.monthlySalary || form.baseSalary || 0);
+  const dailyRate = Number(form.baseSalary || profileBaseSalary || 0) / Math.max(1, daysInMonth);
+  const hourlyRate = Number(selectedStaff?.hourlyRate || 0) || dailyRate / 8;
   const attendanceDeductions = Math.round((absentDays * dailyRate + shortLeaveHours * hourlyRate) * 100) / 100;
-  const totalPayroll = payroll.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
-  const paidPayroll = payroll.filter((row) => row.status === "paid").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
-  const pendingPayroll = payroll.filter((row) => row.status === "pending").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
   const totalDeductions = Number(form.deductions || 0) + attendanceDeductions;
   const projectedTotal = Math.max(0, Number(form.baseSalary || 0) + Number(form.allowances || 0) - totalDeductions);
-  const visiblePayroll = payroll.filter((row) => {
+
+  const monthLabel = (month) => {
+    if (!month) return "All months";
+    const [year, monthIndex] = month.split("-").map(Number);
+    return new Date(year, monthIndex - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  };
+
+  const monthPayroll = payroll.filter((row) => !payrollMonthFilter || row.month === payrollMonthFilter);
+  const totalPayroll = monthPayroll.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const paidPayroll = monthPayroll.filter((row) => row.status === "paid").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const pendingPayroll = monthPayroll.filter((row) => row.status === "pending").reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const totalOtHours = monthPayroll.reduce((sum, row) => sum + Number(row.overtimeHours || 0), 0);
+  const whatsappSentCount = monthPayroll.filter((row) => row.whatsappSentAt).length;
+  const visiblePayroll = monthPayroll.filter((row) => {
     const matchesSearch = `${row.staffName} ${row.staffRole} ${row.month}`.toLowerCase().includes(payrollSearch.toLowerCase());
     const matchesStatus = payrollStatusFilter === "all" || row.status === payrollStatusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesRole = payrollRoleFilter === "all" || row.staffRole === payrollRoleFilter;
+    return matchesSearch && matchesStatus && matchesRole;
   });
+  const paidPercent = totalPayroll ? Math.round((paidPayroll / totalPayroll) * 100) : 0;
+  const pendingCount = monthPayroll.filter((row) => row.status === "pending").length;
 
   const resetForm = () => {
     setForm(emptyForm);
-    setAttendanceForm(emptyAttendanceForm);
     setEditingPayrollId(null);
     setError("");
   };
@@ -3516,54 +3698,53 @@ function AdminPayrollPage() {
     setMessage("");
     setError("");
     setForm({
-      staffId: row.staffId,
+      staffId: idOf(row.staffId),
       month: row.month,
-      baseSalary: row.baseSalary ?? "",
+      baseSalary: row.baseSalary ?? row.basicSalary ?? "",
       allowances: row.allowances ?? "0",
       deductions: row.deductions ?? "0",
       notes: row.notes || "",
     });
   };
 
-  const saveAttendance = async (event) => {
-    event.preventDefault();
-    setSavingAttendance(true);
-    setError("");
-    setMessage("");
-    try {
-      await api.post("/admin/attendance", attendanceForm);
-      setMessage("Attendance saved and salary calculation updated.");
-      setAttendanceForm({ ...emptyAttendanceForm, staffId: attendanceForm.staffId, date: attendanceForm.date });
-      await loadAttendance();
-    } catch (err) {
-      setError(apiErrorMessage(err, "Could not save attendance."));
-    } finally {
-      setSavingAttendance(false);
-    }
-  };
-
-  const deleteAttendance = async (record) => {
-    setError("");
-    setMessage("");
-    try {
-      await api.delete(`/admin/attendance/${record._id}`);
-      setMessage("Attendance record deleted.");
-      await loadAttendance();
-    } catch (err) {
-      setError(apiErrorMessage(err, "Could not delete attendance."));
-    }
-  };
-
   const markPaid = async (row) => {
     setError("");
     setMessage("");
     try {
-      await api.patch(`/admin/payroll/${row._id}/paid`);
-      setMessage(`${row.staffName} salary marked as paid.`);
+      const response = await api.patch(`/admin/payroll/${row._id}/paid`);
+      const updated = unwrap(response);
+      setMessage(updated?.whatsappSentAt
+        ? `${row.staffName} salary paid and payslip PDF sent to WhatsApp.`
+        : `${row.staffName} salary marked as paid. ${updated?.whatsappError || "WhatsApp payslip pending."}`);
       await load();
     } catch (err) {
       setError(apiErrorMessage(err, "Could not mark salary as paid."));
     }
+  };
+
+  const sendWhatsAppPayslip = async (row) => {
+    setError("");
+    setMessage("");
+    try {
+      const response = await api.patch(`/admin/payroll/${row._id}/whatsapp`);
+      const updated = unwrap(response);
+      if (updated?.whatsappSentAt) {
+        setMessage(`${row.staffName} payslip PDF sent to WhatsApp${updated.whatsappRecipient ? ` (${updated.whatsappRecipient})` : ""}.`);
+      } else if (updated?.whatsappFallbackUrl) {
+        await downloadPayslip(updated);
+        window.open(updated.whatsappFallbackUrl, "_blank", "noopener,noreferrer");
+        setMessage(`${row.staffName} payslip downloaded and WhatsApp chat opened. Attach the downloaded PDF if WhatsApp Cloud API is not configured.`);
+      } else {
+        setMessage(updated?.whatsappError || "WhatsApp payslip was not sent.");
+      }
+      await load();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Could not send WhatsApp payslip."));
+    }
+  };
+
+  const openWhatsAppFallback = (row) => {
+    if (row.whatsappFallbackUrl) window.open(row.whatsappFallbackUrl, "_blank", "noopener,noreferrer");
   };
 
   const deletePayroll = async (row) => {
@@ -3585,8 +3766,10 @@ function AdminPayrollPage() {
     setMessage("");
     try {
       await api.post("/admin/payroll/generate", { month: form.month, staffId: form.staffId || undefined });
-      setMessage("Payroll generated from attendance records.");
+      setPayrollMonthFilter(form.month);
+      setMessage(`Payroll generated from attendance records for ${monthLabel(form.month)}.`);
       await load();
+      await loadAttendance();
     } catch (err) {
       setError(apiErrorMessage(err, "Could not generate payroll."));
     } finally {
@@ -3610,7 +3793,17 @@ function AdminPayrollPage() {
 
   return (
     <StaffLayout role="admin">
-      <Header title="Staff payroll" actions={<Button onClick={generatePayroll} disabled={generatingPayroll}><WalletCards size={16} /> {generatingPayroll ? "Generating..." : "Generate payroll"}</Button>} />
+      <Header
+        title="Staff payroll"
+        actions={
+          <>
+            <Input type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} />
+            <Button onClick={generatePayroll} disabled={generatingPayroll}>
+              <WalletCards size={16} /> {generatingPayroll ? "Generating..." : "Generate payroll"}
+            </Button>
+          </>
+        }
+      />
       {message && <p className="success">{message}</p>}
       {error && <p className="error">{error}</p>}
 
@@ -3618,13 +3811,28 @@ function AdminPayrollPage() {
         <StatCard icon={WalletCards} label="Total payroll" value={money(totalPayroll)} />
         <StatCard icon={CheckCircle2} label="Paid" value={money(paidPayroll)} />
         <StatCard icon={Clock} label="Pending" value={money(pendingPayroll)} />
+        <StatCard icon={TrendingUp} label="Overtime hours" value={`${totalOtHours.toFixed(1)}h`} />
+      </section>
+
+      <section className="chart-card admin-payroll-hero">
+        <div>
+          <span className="eyebrow">Payroll control</span>
+          <h2>{monthLabel(payrollMonthFilter)} salary run</h2>
+          <p>Generate salaries from attendance, review overtime, mark payments as paid, and download PDF payslips for every staff member.</p>
+        </div>
+        <div className="admin-payroll-hero-metrics">
+          <span><strong>{monthPayroll.length}</strong><small>Records</small></span>
+          <span><strong>{paidPercent}%</strong><small>Paid</small></span>
+          <span><strong>{pendingCount}</strong><small>Pending</small></span>
+          <span><strong>{whatsappSentCount}</strong><small>WhatsApp sent</small></span>
+        </div>
       </section>
 
       <div className="admin-payroll-layout">
         <section className="chart-card admin-payroll-form-card">
           <div className="reservation-section-title">
             <WalletCards size={18} />
-            <h2>{editingPayrollId ? "Edit salary payment" : "Add salary payment"}</h2>
+            <h2>{editingPayrollId ? "Edit salary payment" : "Manual salary adjustment"}</h2>
           </div>
           <form className="admin-payroll-form" onSubmit={submit}>
             <label>
@@ -3633,8 +3841,12 @@ function AdminPayrollPage() {
                 className="input"
                 value={form.staffId}
                 onChange={(event) => {
-                  setForm({ ...form, staffId: event.target.value });
-                  setAttendanceForm({ ...attendanceForm, staffId: event.target.value });
+                  const staff = staffUsers.find((entry) => idOf(entry.id || entry._id) === event.target.value);
+                  setForm({
+                    ...form,
+                    staffId: event.target.value,
+                    baseSalary: staff?.salaryType === "hourly" ? staff.hourlyRate || "" : staff?.monthlySalary || form.baseSalary,
+                  });
                 }}
                 required
               >
@@ -3646,6 +3858,16 @@ function AdminPayrollPage() {
               <span>Month</span>
               <Input type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} required />
             </label>
+            {selectedStaff && (
+              <div className="admin-payroll-staff-profile">
+                <div>
+                  <strong>{selectedStaff.name}</strong>
+                  <span>{selectedStaff.role} - {selectedStaff.salaryType || "monthly"} staff</span>
+                </div>
+                <StatusBadge status={selectedStaff.attendanceStatus || "checked-out"} />
+                <small>Monthly {money(selectedStaff.monthlySalary)} - Hourly {money(selectedStaff.hourlyRate)} - OT {money(selectedStaff.overtimeRate || Number(selectedStaff.hourlyRate || 0) * 1.5)}</small>
+              </div>
+            )}
             <div className="admin-payroll-form-grid">
               <label>
                 <span>Base salary</span>
@@ -3666,9 +3888,11 @@ function AdminPayrollPage() {
               </div>
             </div>
             <div className="admin-attendance-summary">
+              <span><CheckCircle2 size={15} /> {presentDays} present day{presentDays === 1 ? "" : "s"}</span>
               <span><CalendarDays size={15} /> {absentDays} absent day{absentDays === 1 ? "" : "s"}</span>
               <span><Clock size={15} /> {shortLeaveHours} short-leave hour{shortLeaveHours === 1 ? "" : "s"}</span>
               <span><Clock size={15} /> {workedHours} worked hour{workedHours === 1 ? "" : "s"}</span>
+              <span><TrendingUp size={15} /> {overtimeHours.toFixed(1)} overtime hour{overtimeHours === 1 ? "" : "s"}</span>
               <strong>{money(totalDeductions)} total deductions</strong>
             </div>
             <label>
@@ -3685,14 +3909,19 @@ function AdminPayrollPage() {
         <section className="chart-card admin-payroll-attendance-card">
           <div className="reservation-section-title">
             <CalendarDays size={18} />
-            <h2>Attendance records</h2>
+            <h2>Attendance snapshot</h2>
+          </div>
+          <div className="admin-payroll-attendance-summary">
+            <span><strong>{presentDays}</strong><small>Present</small></span>
+            <span><strong>{workedHours.toFixed(1)}h</strong><small>Total hours</small></span>
+            <span><strong>{overtimeHours.toFixed(1)}h</strong><small>Overtime</small></span>
           </div>
           <div className="admin-attendance-list">
             {selectedAttendance.slice(0, 6).map((record) => (
               <article key={record._id}>
                 <div>
                   <strong>{record.staffName}</strong>
-                  <span>{new Date(record.date).toLocaleDateString()} - {record.workedHours || 0}h worked - {record.shortLeaveHours ? `${record.shortLeaveHours}h short leave` : record.status}</span>
+                  <span>{new Date(record.date).toLocaleDateString()} - {record.workingHours || record.workedHours || 0}h worked - {record.shortLeaveHours ? `${record.shortLeaveHours}h short leave` : record.status}</span>
                 </div>
                 <StatusBadge status={record.status} />
               </article>
@@ -3707,7 +3936,18 @@ function AdminPayrollPage() {
             <h2>Salary payments</h2>
           </div>
           <div className="admin-payroll-toolbar">
-            <Input placeholder="Search staff, role, month" value={payrollSearch} onChange={(event) => setPayrollSearch(event.target.value)} />
+            <label>
+              <Search size={16} />
+              <Input placeholder="Search staff, role, month" value={payrollSearch} onChange={(event) => setPayrollSearch(event.target.value)} />
+            </label>
+            <Input type="month" value={payrollMonthFilter} onChange={(event) => setPayrollMonthFilter(event.target.value)} />
+            <select className="input" value={payrollRoleFilter} onChange={(event) => setPayrollRoleFilter(event.target.value)}>
+              <option value="all">All roles</option>
+              <option value="waiter">Waiters</option>
+              <option value="chef">Chefs</option>
+              <option value="staff">Staff</option>
+              <option value="kitchen">Kitchen</option>
+            </select>
             <select className="input" value={payrollStatusFilter} onChange={(event) => setPayrollStatusFilter(event.target.value)}>
               <option value="all">All statuses</option>
               <option value="pending">Pending</option>
@@ -3719,18 +3959,36 @@ function AdminPayrollPage() {
             <div className="admin-payroll-list">
               {visiblePayroll.map((row) => (
                 <article className="admin-payroll-card" key={row._id}>
-                  <div>
-                    <h3>{row.staffName}</h3>
-                    <p>{row.staffRole} - {row.month}</p>
-                    <span>{row.presentDays || 0} days - {row.totalHours || 0}h - OT {row.overtimeHours || 0}h - Basic {money(row.basicSalary || row.baseSalary)}</span>
-                    {row.whatsappSentAt && <span>WhatsApp payslip sent {new Date(row.whatsappSentAt).toLocaleDateString()}</span>}
-                    {row.whatsappError && <span className="error">WhatsApp: {row.whatsappError}</span>}
+                  <div className="admin-payroll-card-main">
+                    <div>
+                      <h3>{row.staffName}</h3>
+                      <p>{row.staffRole} - {monthLabel(row.month)}</p>
+                    </div>
+                    <StatusBadge status={row.status} />
                   </div>
-                  <strong>{money(row.totalAmount)}</strong>
-                  <StatusBadge status={row.status} />
+                  <div className="admin-payroll-breakdown">
+                    <span><small>Present</small><strong>{row.presentDays || 0} days</strong></span>
+                    <span><small>Total hours</small><strong>{Number(row.totalHours || 0).toFixed(1)}h</strong></span>
+                    <span><small>Overtime</small><strong>{Number(row.overtimeHours || 0).toFixed(1)}h</strong></span>
+                    <span><small>Basic</small><strong>{money(row.basicSalary || row.baseSalary)}</strong></span>
+                    <span><small>OT pay</small><strong>{money(row.overtimeAmount || 0)}</strong></span>
+                    <span><small>Deductions</small><strong>{money(row.deductions || 0)}</strong></span>
+                  </div>
+                  <div className="admin-payroll-card-total">
+                    <small>Total salary</small>
+                    <strong>{money(row.totalAmount)}</strong>
+                  </div>
+                  <div className="admin-payroll-delivery">
+                    {row.paidAt && <span><CheckCircle2 size={15} /> Paid {new Date(row.paidAt).toLocaleDateString()}</span>}
+                    {row.whatsappSentAt && <span><MessageSquare size={15} /> WhatsApp sent {row.whatsappRecipient ? `to ${row.whatsappRecipient}` : new Date(row.whatsappSentAt).toLocaleDateString()}</span>}
+                    {row.whatsappError && <span className="error"><MessageSquareQuote size={15} /> WhatsApp: {row.whatsappError}</span>}
+                    {!row.whatsappSentAt && !row.whatsappError && <span><MessageSquare size={15} /> WhatsApp payslip pending</span>}
+                  </div>
                   <div className="admin-payroll-card-actions">
                     <Button variant="ghost" onClick={() => editPayroll(row)}><Edit3 size={16} /> Edit</Button>
                     {row.status !== "paid" && <Button variant="soft" onClick={() => markPaid(row)}><CheckCircle2 size={16} /> Mark paid</Button>}
+                    {row.status === "paid" && !row.whatsappSentAt && <Button variant="soft" onClick={() => sendWhatsAppPayslip(row)}><MessageSquare size={16} /> Send WhatsApp</Button>}
+                    {row.whatsappFallbackUrl && <Button variant="soft" onClick={() => openWhatsAppFallback(row)}><MessageSquareQuote size={16} /> Open WhatsApp</Button>}
                     <Button variant="soft" onClick={() => downloadPayslip(row)}><ReceiptText size={16} /> Payslip</Button>
                     <Button variant="ghost" onClick={() => deletePayroll(row)}><Trash2 size={16} /> Delete</Button>
                   </div>
@@ -4327,6 +4585,7 @@ function AdminTablesPage() {
   const [error, setError] = useState("");
   const availableCount = tables.filter((table) => !table.isOccupied).length;
   const occupiedCount = tables.length - availableCount;
+  const tableCustomerQrUrl = (table) => `${location.origin}/customer/table/${table._id}`;
   const nextTableNumber = String(
     tables.reduce((max, table) => {
       const parsed = Number.parseInt(String(table.tableNumber).replace(/\D/g, ""), 10);
@@ -4371,6 +4630,56 @@ function AdminTablesPage() {
     } catch (err) {
       setError(err.response?.data?.message || "Table could not be deleted.");
     }
+  };
+
+  const downloadTableQr = async (table) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 900;
+    canvas.height = 1100;
+    const context = canvas.getContext("2d");
+    const qrUrl = tableCustomerQrUrl(table);
+    const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(qrUrl)}`;
+    const qrImage = new Image();
+    qrImage.crossOrigin = "anonymous";
+    qrImage.onload = () => {
+      context.fillStyle = "#fff8e1";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "#073828";
+      context.font = "900 54px Arial";
+      context.fillText("DineFlow", 72, 96);
+      context.fillStyle = "#8b6f47";
+      context.font = "700 24px Arial";
+      context.fillText("Restaurant table ordering QR", 72, 132);
+      context.fillStyle = "#08784f";
+      context.font = "900 72px Arial";
+      context.fillText(`Table ${table.tableNumber}`, 72, 235);
+      context.fillStyle = "#ffffff";
+      context.strokeStyle = "#d8cba9";
+      context.lineWidth = 4;
+      if (context.roundRect) {
+        context.beginPath();
+        context.roundRect(150, 300, 600, 600, 34);
+        context.fill();
+        context.stroke();
+      } else {
+        context.fillRect(150, 300, 600, 600);
+        context.strokeRect(150, 300, 600, 600);
+      }
+      context.drawImage(qrImage, 190, 340, 520, 520);
+      context.fillStyle = "#21170b";
+      context.font = "800 30px Arial";
+      context.textAlign = "center";
+      context.fillText("Scan to login and order", canvas.width / 2, 965);
+      context.fillStyle = "#635f53";
+      context.font = "600 20px Arial";
+      context.fillText(qrUrl, canvas.width / 2, 1006);
+      context.textAlign = "left";
+      const link = document.createElement("a");
+      link.download = `dineflow-table-${table.tableNumber}-qr.png`.replace(/\s+/g, "-").toLowerCase();
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    };
+    qrImage.src = qrApi;
   };
 
   return (
@@ -4424,15 +4733,17 @@ function AdminTablesPage() {
               {tables.map((table) => (
                 <article className="admin-table-card" key={table._id}>
                   <div className="admin-table-qr">
-                    <QRCodeSVG value={table.qrCodeUrl || `${location.origin}/menu/${table._id}`} size={88} />
+                    <QRCodeSVG value={tableCustomerQrUrl(table)} size={88} />
                   </div>
                   <div className="admin-table-info">
                     <h3>Table {table.tableNumber}</h3>
                     <p>{table.capacity} seats</p>
+                    <small className="muted">Scan to login and order</small>
                     <div>
                       <StatusBadge status={table.isOccupied ? "occupied" : "free"} />
                       <StatusBadge status={table.serviceStatus || "available"} />
                     </div>
+                    <Button variant="soft" onClick={() => downloadTableQr(table)}><QrCode size={16} /> Download QR</Button>
                   </div>
                   <button className="admin-table-delete" type="button" onClick={() => deleteTable(table)} aria-label={`Delete table ${table.tableNumber}`}>
                     <Trash2 size={18} />
@@ -4779,6 +5090,7 @@ function App() {
           <Route path="/staff-kiosk" element={<StaffAttendanceKioskPage />} />
           <Route path="/menu/:tableId" element={<MenuPage />} />
           <Route path="/customer" element={<ProtectedRoute roles={["customer"]}><CustomerDashboard /></ProtectedRoute>} />
+          <Route path="/customer/table/:tableId" element={<ProtectedRoute roles={["customer"]}><CustomerTableEntryPage /></ProtectedRoute>} />
           <Route path="/customer/menu" element={<ProtectedRoute roles={["customer"]}><MenuPage /></ProtectedRoute>} />
           <Route path="/customer/cart" element={<ProtectedRoute roles={["customer"]}><CartPage /></ProtectedRoute>} />
           <Route path="/customer/checkout" element={<ProtectedRoute roles={["customer"]}><CheckoutPage /></ProtectedRoute>} />
